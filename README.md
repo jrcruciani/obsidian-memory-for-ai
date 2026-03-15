@@ -22,7 +22,8 @@ The full guide ([guide.md](guide.md)) covers:
 | **Memory folder** (`memory/`) | Structured files for people, projects, glossary, and professional context |
 | **Context summaries** (`ContextSummary.md`) | Semantic index per folder so the AI doesn't need to read every file |
 | **Task list** (`TASKS.md`) | Time-horizoned tasks the AI can query and update |
-| **Wikilinks & graph** | `[[wikilinks]]` between notes create a navigable knowledge graph — and you can ask the AI to build it for you |
+| **Wikilinks & graph** | `[[wikilinks]]` with typed relationships (`extends`, `supports`, `contradicts`…) create a navigable knowledge graph — and you can ask the AI to build it for you |
+| **Memory classification** | Each memory file is tagged by type (`fact`, `preference`, `rule`, `project`, `person`) and relevance (`high`, `medium`, `low`) for prioritization and decay |
 | **Update protocol** | Instructions so the AI co-maintains the system at the end of each session |
 | **Security guidelines** | What to keep out of the system and why |
 
@@ -57,6 +58,10 @@ That's it. The system grows organically from there.
 ## Read the full guide
 
 👉 **[guide.md](guide.md)**
+
+## Acknowledgments
+
+The memory classification system (type tagging, relevance scoring, and relationship types between memories) was inspired by [**Chetna**](https://github.com/vineetkishore01/Chetna), a Rust-based memory system for AI agents by [@vineetkishore01](https://github.com/vineetkishore01). Chetna implements these concepts as code (importance scoring, Ebbinghaus decay curves, typed memory relationships in a database). This project adapts the same ideas as pure Markdown conventions — no code required.
 
 ---
 
