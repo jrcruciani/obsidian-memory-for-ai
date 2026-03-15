@@ -95,7 +95,7 @@ This is the heart of the system. It loads automatically at the start of each Cla
 
 ## Component 2: The `memory/` folder
 
-Divide memory into six layers:
+Divide memory into these layers:
 
 ### Memory classification and relevance
 
@@ -196,7 +196,7 @@ One file per relevant person (partner, children, collaborators, frequent clients
 
 ```markdown
 ---
-type: fact
+type: person
 relevance: high
 last_reviewed: 2026-03-15
 ---
@@ -618,7 +618,7 @@ The rule of thumb: if losing access to a piece of information would cause you fi
 
 | Tool                    | Compatibility | Method                              |
 |-------------------------|--------------|-------------------------------------|
-| Claude Code (CLI)       | Native       | CLAUDE.md in working directory      |
+| Claude Code (CLI)       | Native       | CLAUDE.md in working directory + `~/.claude/CLAUDE.md` global |
 | VS Code Copilot         | High         | COPILOT.md + context files          |
 | Claude.ai               | Manual       | Attach or paste at start            |
 | ChatGPT                 | Manual       | Custom Instructions + attach        |
