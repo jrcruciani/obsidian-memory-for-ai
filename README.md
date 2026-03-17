@@ -86,6 +86,8 @@ The honest take: if you're already running a RAG pipeline for other reasons, thi
 
 The memory classification system (type tagging, relevance scoring, and relationship types between memories) was inspired by [**Chetna**](https://github.com/vineetkishore01/Chetna), a Rust-based memory system for AI agents by [@vineetkishore01](https://github.com/vineetkishore01). Chetna implements these concepts as code — importance scoring, Ebbinghaus decay curves, typed relationships in a database. This project adapts the same ideas as pure Markdown conventions.
 
+The memory hierarchy model, working context block, rolling session summaries, memory pressure protocol, and proactive update triggers were inspired by [**MemGPT**](https://research.memgpt.ai) (Packer et al., 2023), which demonstrated that LLMs benefit from OS-style tiered memory management — paging information between a small working context and larger archival storage. This project translates those patterns from code and databases into plain Markdown files and loading conventions.
+
 ---
 
 *Developed through daily use with Claude Code. March 2026.*

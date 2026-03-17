@@ -12,6 +12,8 @@ minimal-vault/
 ├── TASKS.md                           ← Time-horizoned task list
 └── memory/
     ├── ContextSummary.md              ← What to load first vs. on demand
+    ├── working-context.md             ← Mutable state snapshot (updated each session)
+    ├── recent-sessions.md             ← Rolling log of last ~10 sessions
     ├── glossary.md                    ← Acronyms, internal terms, nicknames
     ├── context/
     │   ├── professional.md            ← Role, lab, tools, team
@@ -39,5 +41,7 @@ minimal-vault/
 - **The glossary resolves ambiguity.** "The manuscript" means the Strasbourg MS. "GG" means the museum. The AI won't have to guess.
 - **People profiles include what matters for AI context**, not a full biography. Marta's communication preferences and data format expectations are there because they affect collaboration.
 - **The decision record captures *why*, not just *what*.** DEC-001 explains why Markdown+CSV was chosen over SQLite — so a future session won't suggest the same rejected alternatives.
+- **`working-context.md` is a mutable snapshot.** It captures what matters *right now* — active threads, pending items, recent decisions — so the AI has temporal context without loading full project files. The AI rewrites it at session end.
+- **`recent-sessions.md` is a recency buffer.** One line per session, capped at ~10 entries. It gives the AI a sense of momentum and sequence without full conversation replay.
 - **Wikilinks with relationship verbs** (`supports:`, `applies:`, `related:`) connect files into a navigable graph.
 - **Frontmatter is minimal but consistent.** Type, relevance, last_reviewed on every memory file.

@@ -9,30 +9,37 @@
 
 1. [The problem this solves](#the-problem-this-solves)
 2. [General architecture](#general-architecture)
-3. [Component 1: The master document (`CLAUDE.md`)](#component-1-the-master-document-claudemd)
-4. [Component 2: The `memory/` folder](#component-2-the-memory-folder)
+3. [Memory hierarchy](#memory-hierarchy)
+4. [Component 1: The master document (`CLAUDE.md`)](#component-1-the-master-document-claudemd)
+5. [Component 2: The `memory/` folder](#component-2-the-memory-folder)
    - [Memory classification and relevance](#memory-classification-and-relevance)
    - [`ContextSummary.md` — Operational memory index](#contextsummarymd-inside-memory--operational-memory-index)
+   - [`working-context.md` — Mutable session state](#working-contextmd--mutable-session-state)
+   - [`recent-sessions.md` — Rolling session log](#recent-sessionsmd--rolling-session-log)
    - [`glossary.md` — Internal vocabulary](#glossarymd--internal-vocabulary)
    - [`people/` — People profiles](#peoplenamedmd--people-profiles)
    - [`projects/` — Active projects](#projectsprojectmd--active-projects)
    - [`decisions/` — Decision memory](#decisionsdecisionmd--decision-memory)
    - [`context/company.md` — Professional environment](#contextcompanymd--professional-environment)
    - [`context/personality.md` — Personality profile](#contextpersonalitymd--personality-profile-optional)
-5. [Component 3: `ContextSummary.md` in each folder](#component-3-contextsummarymd-in-each-folder)
-6. [Component 4: `TASKS.md`](#component-4-tasksmd)
-7. [Component 5: Wikilinks and the knowledge graph](#component-5-wikilinks-and-the-knowledge-graph)
-8. [How it integrates with AI tools](#how-it-integrates-with-ai-tools)
+6. [Component 3: `ContextSummary.md` in each folder](#component-3-contextsummarymd-in-each-folder)
+7. [Component 4: `TASKS.md`](#component-4-tasksmd)
+8. [Component 5: Wikilinks and the knowledge graph](#component-5-wikilinks-and-the-knowledge-graph)
+9. [How it integrates with AI tools](#how-it-integrates-with-ai-tools)
    - [Working from a different project directory](#working-from-a-different-project-directory)
-9. [Update protocol](#update-protocol-instructions-for-the-ai)
-   - [Periodic maintenance](#periodic-maintenance-let-the-ai-audit-the-vault)
-   - [Maintenance cadence](#turn-maintenance-into-a-real-routine)
-10. [Typical workflow](#typical-workflow)
-11. [Implementation recommendations](#implementation-recommendations)
+10. [Update protocol](#update-protocol-instructions-for-the-ai)
+    - [Proactive memory triggers](#proactive-memory-triggers)
+    - [Periodic maintenance](#periodic-maintenance-let-the-ai-audit-the-vault)
+    - [Maintenance cadence](#turn-maintenance-into-a-real-routine)
+11. [Typical workflow](#typical-workflow)
+12. [Context pressure and progressive loading](#context-pressure-and-progressive-loading)
+    - [Memory pressure](#memory-pressure-when-to-stop-loading)
+    - [Progressive retrieval](#progressive-retrieval-search--scan--load)
+13. [Implementation recommendations](#implementation-recommendations)
     - [Security](#a-note-on-security)
-12. [Compatible tools](#compatible-tools)
-13. [Why Obsidian and not something else](#why-obsidian-and-not-something-else)
-14. [How the system evolves](#how-the-system-evolves)
+14. [Compatible tools](#compatible-tools)
+15. [Why Obsidian and not something else](#why-obsidian-and-not-something-else)
+16. [How the system evolves](#how-the-system-evolves)
 
 ---
 
@@ -54,6 +61,8 @@ vault/
 │
 ├── memory/                     ← Structured memory by domain
 │   ├── ContextSummary.md       ← Operational index: what to load first vs. on demand
+│   ├── working-context.md      ← Mutable state: what matters right now (updated each session)
+│   ├── recent-sessions.md      ← Rolling log of last ~10 sessions
 │   ├── glossary.md             ← Acronyms, internal terms, nicknames
 │   ├── people/                 ← One .md per relevant person
 │   │   ├── person1.md
@@ -78,6 +87,26 @@ vault/
 │
 └── ...
 ```
+
+---
+
+## Memory hierarchy
+
+The system organizes context into three loading tiers — a pattern inspired by how operating systems manage memory between fast registers, RAM, and disk. The idea comes from [MemGPT](https://research.memgpt.ai) (Packer et al., 2023), which showed that LLMs benefit from the same kind of hierarchical memory management that CPUs use. We adapt the concept to plain files instead of code.
+
+| Tier | What it contains | When it loads | Analogy |
+|------|-----------------|---------------|---------|
+| **Tier 0 — System prompt** | Master document (`CLAUDE.md`) | Always, automatically | CPU registers |
+| **Tier 1 — Working memory** | `glossary.md`, `company.md`, `personality.md`, `working-context.md` | Always, at session start | RAM |
+| **Tier 2 — Reference memory** | `people/`, `projects/`, `decisions/`, `recent-sessions.md` | On demand, when the topic requires it | Disk |
+
+**Tier 0** is read-only during a session — it's your identity and system instructions. The AI reads it once and doesn't modify it mid-session.
+
+**Tier 1** is the active working set. These files are small, dense, and always relevant. The `working-context.md` file (described below) is the one piece of Tier 1 that the AI *writes to* at session end — a mutable snapshot of what matters right now.
+
+**Tier 2** is everything else. The AI doesn't load it unless the conversation requires it. `ContextSummary.md` files act as the index that tells the AI *which* Tier 2 files to pull in — like a page table that maps virtual addresses to physical storage.
+
+This hierarchy matters because context windows are finite. Loading everything wastes tokens on information that isn't relevant to the current session. Loading nothing forces the AI to guess. The tier model gives a middle path: always-on identity, always-on working state, and structured access to everything else.
 
 ---
 
@@ -192,6 +221,85 @@ Think of it as a router between the master document and the detailed memory file
 ## Recent structural changes
 - [date]: [what changed and why]
 ```
+
+---
+
+### `working-context.md` — Mutable session state
+
+This is the most MemGPT-inspired addition to the system. Where `ContextSummary.md` is structural (it describes *what's in the folder*), `working-context.md` is temporal — it captures *what matters right now*.
+
+Think of it as a small whiteboard that the AI updates at the end of each session with the most important current facts. It's Tier 1: always loaded, always compact, always fresh.
+
+```markdown
+---
+type: fact
+relevance: high
+last_reviewed: 2026-03-17
+---
+# Working context
+
+Last updated by AI after session on 2026-03-17.
+
+## Active focus
+- Wine Academy: finalizing Cloudflare architecture, Héctor's content pipelines replace Paperclip+NanoClaw
+- Herensuge: paused at chapter 10, picking up chapter 11 when bandwidth allows
+
+## Open threads
+- Austria interview: results expected June 2026
+- Gabriel: first therapy appointment Thursday 19/3
+
+## Recent decisions
+- DEC-007: Content pipelines replace Paperclip+NanoClaw for Wine Academy
+- DEC-006: Cloudflare-first architecture for Wine Academy
+
+## Stale / resolved
+- (items here get pruned on next review)
+```
+
+**How it works in practice:**
+
+1. The AI reads `working-context.md` at session start (Tier 1, always loaded)
+2. During the session, if something important changes — a decision is made, a project shifts, a thread resolves — the AI notes it
+3. At session end, the AI rewrites this file to reflect the updated state
+4. Old items move to "Stale / resolved" and get pruned next session
+
+**Key constraints:**
+- **Keep it under 40 lines.** If it grows beyond that, information should move to the proper file (project, person, decision) instead.
+- **Facts, not narrative.** This is a state snapshot, not a session diary.
+- **The AI writes it, you review it.** Glance at it occasionally to make sure the AI isn't drifting.
+
+---
+
+### `recent-sessions.md` — Rolling session log
+
+This file gives the AI temporal continuity — a compressed record of what happened in recent sessions. Without it, every session starts from a structural snapshot but has no sense of *sequence* or *momentum*.
+
+Inspired by MemGPT's recursive summarization of evicted conversation history. Instead of storing full transcripts, you store a one-liner per session that captures the key outcome.
+
+```markdown
+---
+type: fact
+relevance: medium
+last_reviewed: 2026-03-17
+---
+# Recent sessions
+
+Rolling log of the last ~10 sessions. Oldest entries get pruned.
+
+| Date | Tool | Topic | Key outcome |
+|------|------|-------|-------------|
+| 2026-03-17 | Copilot | Memory system | Added MemGPT-inspired hierarchy, working-context, session log |
+| 2026-03-16 | Claude Code | Memory system | Added decision layer, maintenance protocol, ResumenContexto |
+| 2026-03-15 | Claude Code | Wine Academy | Defined Cloudflare architecture, evaluated content pipelines |
+| 2026-03-14 | Claude Code | Blog | Published post on impermanence and digital memory |
+```
+
+**Rules:**
+- **Cap at ~10 entries.** When a new session is logged, the oldest entry drops off. This is not an archive — it's a recency buffer.
+- **One line per session.** Resist the urge to write paragraphs. The AI can always load the relevant project or decision file for details.
+- **The AI appends, you prune.** At session end, the AI adds a row. During maintenance, you can remove entries that are no longer useful.
+
+**When to load it:** Tier 2 — load it when the AI needs to understand what happened recently (e.g., "continue where we left off", "what did we decide last time?", "catch me up"). Don't load it for sessions where temporal context doesn't matter.
 
 ---
 
@@ -559,7 +667,30 @@ Mandatory rule: at the end of each relevant session, update:
 3. **memory/ContextSummary.md** — if the structure or loading logic of memory changed
 4. **memory/** — update people, project, or decision files if applicable
 5. **TASKS.md** — mark completed tasks or add new ones
+6. **memory/working-context.md** — rewrite to reflect current state
+7. **memory/recent-sessions.md** — append a one-line entry for this session
 ```
+
+### Proactive memory triggers
+
+Don't wait for session end. MemGPT showed that the most effective memory systems update *during* the conversation, not just at the end. Include these trigger rules in your master document:
+
+```markdown
+## Proactive memory triggers
+
+During the session, if any of these happen, propose the update immediately:
+
+- **New fact about a person** → Propose adding it to their people/ file
+- **Decision made with rationale** → Propose a new DEC- entry in decisions/
+- **Project status changes** → Propose updating the project file
+- **New term or codename introduced** → Propose adding it to glossary.md
+- **Task completed or created** → Update TASKS.md right away, don't wait
+
+"Propose" means: tell me what you'd update and where, then do it if I confirm.
+For TASKS.md updates, just do it — no confirmation needed.
+```
+
+**Why proactive beats reactive:** At session end, the AI has to reconstruct what happened from its conversation history. Mid-session, the context is fresh and the update is precise. This is the plain-text equivalent of MemGPT's self-directed working context edits — the AI manages its own memory as the conversation evolves.
 
 This turns the AI into a co-maintainer of the system. At the end of any working session you can ask: "Update the relevant memory files with what we did today."
 
@@ -612,6 +743,63 @@ Don't treat maintenance as an occasional vague intention. Give it explicit caden
 
 ---
 
+## Context pressure and progressive loading
+
+Context windows are finite. Even the largest models have limits, and filling a window with context leaves less room for the actual work. These two protocols — adapted from MemGPT's memory pressure warnings and paginated retrieval — help the AI manage context efficiently without your intervention.
+
+### Memory pressure: when to stop loading
+
+Include this instruction in your master document or ContextSummary:
+
+```markdown
+## Memory pressure rule
+
+If you have loaded more than 5 files from memory/ in this session,
+stop loading more. Instead:
+1. Summarize what you've learned so far from the loaded files.
+2. Ask me which thread to go deeper on.
+3. Only then load additional files for that specific thread.
+
+Never load all of people/, projects/, and decisions/ in the same session
+unless explicitly asked.
+```
+
+**Why this matters:** Without this rule, an eager AI will read every file it finds referenced in a ContextSummary, quickly consuming the context window with information that may not be relevant. The pressure rule forces prioritization.
+
+### Progressive retrieval: search → scan → load
+
+When the AI needs information from the vault, it should follow this sequence instead of loading files speculatively:
+
+1. **Search** — Read the relevant `ContextSummary.md` to identify which files *might* contain the answer
+2. **Scan** — If uncertain, read only the frontmatter and first heading of candidate files to confirm relevance
+3. **Load** — Read the full file only when confirmed relevant
+
+This is the Markdown equivalent of MemGPT's paginated archival search. Instead of dumping an entire database into context, the AI navigates the index, narrows candidates, and loads only what it needs.
+
+```
+Example: User asks "what did we decide about the data format for Concordance?"
+
+Step 1 — Read decisions/ContextSummary.md
+         → Finds: "DEC-001 - Concordance data format"
+Step 2 — Load decisions/DEC-001 - Concordance data format.md
+         → Answer found. No other files needed.
+
+NOT: Load all of decisions/, projects/, and people/ "just in case."
+```
+
+**Teach the AI in your master document:**
+
+```markdown
+## How to find information
+
+When you need information from my vault:
+1. Read the ContextSummary.md of the relevant folder first.
+2. Load only the files that match the current question.
+3. If you're unsure which file has the answer, ask me rather than loading everything.
+```
+
+---
+
 ## Implementation recommendations
 
 ### Start simple
@@ -623,6 +811,8 @@ Don't try to build the whole system at once. Recommended order:
 5. Add people profiles as they become relevant
 6. Add `ContextSummary.md` files in folders as needed
 7. Add `memory/decisions/` once you start making changes whose rationale should persist
+8. Add `memory/working-context.md` once you have enough context that session continuity matters
+9. Add `memory/recent-sessions.md` once you want the AI to know what you've been working on recently
 
 ### Design principles
 - **Each file must be readable independently** — don't rely on the AI remembering another file from the same session
