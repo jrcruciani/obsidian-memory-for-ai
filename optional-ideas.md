@@ -177,4 +177,127 @@ const DECISION_KEYWORDS = ['decided', 'decision', 'why did', 'when did'];
 
 ---
 
+## 💓 Pulse System — Structured emotional check-in
+
+**What it does:** A weekly, structured emotional review that creates a persistent log of your internal state over time. Five canonical questions — designed to bypass automatic "I'm fine" responses — generate an entry that the AI stores and summarizes across sessions.
+
+**Why it's useful:** Memory systems capture facts, projects, and decisions, but not how you actually feel. If your personality profile includes low emotional expressiveness (e.g., low Emotionality on HEXACO) combined with moderate anxiety, internal tension accumulates invisibly. Pulse creates a channel for naming what you don't name by default — not therapy, just structured registration.
+
+**The five canonical questions:**
+
+| # | Question | What it targets |
+|---|----------|----------------|
+| P1 | "What are you carrying this week that you haven't said out loud?" | Presupposes something exists — avoids "I'm fine" |
+| P2 | "Was there something you wanted to do and didn't? Lack of time, energy, or something less clear?" | Non-linear execution pattern without framing it as failure |
+| P3 | "Which project or task generated the most internal resistance? Do you know why?" | Resistance as disguised emotional signal |
+| P4 | *(Rotating — see below)* | Relational awareness |
+| P5 | "If this week were a mood, what would it be? One word or an image." | Intuitive capture beyond analysis |
+
+**P4 rotation** — one relational question per week, cycling through three variants:
+
+| `week_number % 3` | Question |
+|--------------------|----------|
+| 0 | "How's the dynamic with [partner] this week? Anything left unsaid?" |
+| 1 | "How are things with [children/family]? Anything worrying or especially enjoyable?" |
+| 2 | "Is anyone in your life (work, family, friends) occupying more mental space than usual?" |
+
+**File structure:**
+
+```
+memory/
+└── pulse/
+    ├── README.md              ← canonical questions + rotation logic + AI protocol
+    ├── YYYY-MM-DD.md          ← one entry per pulse session
+    └── pulse-summary.md       ← rolling summary of last ~8 entries (Tier 2)
+```
+
+**Entry format:**
+
+```markdown
+---
+date: 2026-03-23
+type: pulse
+week: 12
+---
+
+# Pulse — 2026-03-23
+
+**P1 — What are you carrying this week that you haven't said out loud?**
+[response]
+
+**P2 — Was there something you wanted to do and didn't?**
+[response]
+
+**P3 — What generated the most internal resistance?**
+[response]
+
+**P4 — [this week's relational question]**
+[response]
+
+**P5 — If this week were a mood...**
+[response]
+
+---
+*Free notes (optional):*
+[anything that doesn't fit the questions]
+```
+
+**`pulse-summary.md`** — the file the AI loads in Tier 2 when emotional context matters:
+
+```markdown
+---
+type: pulse-summary
+last_updated: 2026-03-23
+---
+
+# Pulse summary — recent entries
+
+## Observed trends
+[2–4 lines on recurring patterns: persistent themes, resistances, improvements]
+
+## Latest entry — 2026-03-23
+[3–5 line summary]
+
+## Previous entries (compressed)
+| Date | General state | Main resistance | Relationships | Mood |
+|------|--------------|-----------------|---------------|------|
+| ...  | ...          | ...             | ...           | ...  |
+```
+
+**AI protocol for conducting a pulse session:**
+
+1. Read `pulse/README.md` to determine which P4 is due based on the current week number.
+2. Ask questions **one at a time** — wait for a response before continuing.
+3. **Do not interpret or comment** during the session. Just listen and register. At the end, offer a brief synthesis only if the user wants it.
+4. If the user responds with a single word or evasively, the AI may ask **one** follow-up question — but only one, and without insisting.
+5. On close, create the entry file and update `pulse-summary.md` automatically — it's part of the protocol.
+
+**Tone:** Direct, no therapeutic artifice. The user doesn't need validation or performative empathy — they need a space to name what they don't name by default.
+
+**Frequency:** Weekly, preferably Sunday afternoon or Monday morning. Not before a stressful trip or event (the response will be biased). Duration: 5–8 minutes.
+
+**How to integrate:**
+
+1. **Create the file structure** (`memory/pulse/`, `README.md`, `pulse-summary.md`)
+2. **Add to your memory index** — include `pulse/pulse-summary.md` in your Tier 2 loading criteria: *"load if the session touches emotional state, wellbeing, resistance to projects, burnout, or the user mentions how they feel"*
+3. **Add proactive triggers** to your AI instruction file:
+   - If the user mentions exhaustion, resistance, tension, or wellbeing → load `pulse-summary.md` before responding
+   - If the user says `/pulse` or asks for the weekly review → read `pulse/README.md` and conduct the session
+4. **Add to glossary** — `pulse` → structured weekly emotional review
+
+**Design notes:**
+
+- The questions are calibrated for someone with **low Emotionality + moderate Anxiety without external channels**. Adapt them if your profile is different.
+- P4 rotation prevents the relational question from becoming routine and easy to answer on autopilot.
+- The system **does not attempt therapy** — it attempts registration. That distinction matters for buy-in.
+- If responses are consistently evasive across multiple sessions, that *is* data worth noting in the summary trends.
+
+**Customization ideas:**
+- Add a P6 for body/health awareness ("How's your body feeling this week?")
+- Track a numeric energy score (1–10) alongside each entry for trend graphing
+- Create a quarterly "pulse retrospective" that synthesizes patterns across ~12 entries
+- Integrate with the Horizon Strip — show upcoming stressors next to the pulse prompt for context
+
+---
+
 *Have an idea for this list? Open an issue or PR on [obsidian-memory-for-ai](https://github.com/jrcruciani/obsidian-memory-for-ai).*
