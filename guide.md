@@ -640,7 +640,11 @@ Package the memory system as a Cowork plugin with slash commands (`/memory-load`
 
 Package the memory system as a local MCP server that exposes tools like `memory_read`, `memory_search`, `memory_update`. Any AI tool that supports MCP (Claude Code, Cursor, etc.) could then access your vault's memory from any working directory, automatically. This is essentially what projects like [Chetna](https://github.com/vineetkishore01/Chetna) do with a database backend — the same idea could be built on top of your Markdown files.
 
-**Recommendation:** Start with Option 1. It takes two minutes, works immediately, and covers 90% of use cases. If you use Claude Desktop (Cowork) heavily, Option 3 gives you the best experience there. Move to Option 4 only if you need programmatic memory access from custom tools.
+**Option 5: Standalone automation agent (runs outside conversations)**
+
+Build a script that maintains your memory files autonomously — session-end updates, scheduled audits, consistency checks — without needing an open chat session. Works with the Anthropic API (direct tool use) or the GitHub Copilot SDK (pre-built agentic loop). See the full guide in **[automation-guide.md](automation-guide.md)**.
+
+**Recommendation:** Start with Option 1. It takes two minutes, works immediately, and covers 90% of use cases. If you use Claude Desktop (Cowork) heavily, Option 3 gives you the best experience there. If you want automated maintenance that runs on a schedule, Option 5 is the way to go. Move to Option 4 only if you need programmatic memory access from custom tools.
 
 ### VS Code + GitHub Copilot
 Use `COPILOT.md` (a copy of `CLAUDE.md`) in the root directory. Copilot can include it as workspace context.

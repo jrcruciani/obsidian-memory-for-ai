@@ -34,6 +34,8 @@ The [`examples/minimal-vault/`](examples/minimal-vault/) directory contains a co
 
 **[plugin-guide.md](plugin-guide.md)** explains how to package the system as a Cowork plugin with slash commands and auto-triggering skills for Claude Desktop.
 
+**[automation-guide.md](automation-guide.md)** shows how to build standalone agents (using the Anthropic API or GitHub Copilot SDK) that maintain your memory files automatically — session-end updates, scheduled audits, consistency checks — without needing an open chat session.
+
 ---
 
 ## Why plain Markdown instead of a vector database
@@ -81,6 +83,7 @@ The honest take: if you're already running a RAG pipeline for other reasons, thi
 | Claude.ai / ChatGPT | Paste or attach at session start |
 | Cursor | `.cursorrules` or context files |
 | Any AI with file access | Attach the relevant `.md` files |
+| Standalone agent (API/SDK) | Automated maintenance — see [automation-guide.md](automation-guide.md) |
 
 ## Acknowledgments
 
