@@ -14,7 +14,7 @@ The memory system described in the guide works well, but it depends on disciplin
 2. Append a line to `recent-sessions.md`
 3. Update `TASKS.md` with completed or new tasks
 4. Propagate changes to `people/`, `projects/`, `decisions/` if relevant
-5. Update `last_reviewed` dates in frontmatter
+5. Update `last_reviewed` only on files actually reviewed or changed
 
 When you're inside a conversation with the AI, you can ask it to do this. But if you forget, the memory drifts. And for periodic maintenance — monthly audits, stale file detection, orphan link hunting — you need to remember to schedule it yourself.
 
@@ -168,12 +168,13 @@ After understanding the current state, update these files:
 2. memory/recent-sessions.md — append a one-line entry if a session transcript is provided
 3. TASKS.md — mark completed tasks, add new ones if mentioned
 4. Any memory/ files (people, projects, decisions) that need updates
-5. Update last_reviewed dates in YAML frontmatter of touched files
+5. Update last_reviewed dates in YAML frontmatter of touched files — only when they were semantically reviewed or changed
 
 ## Rules
 - Keep working-context.md under 40 lines. Facts, not narrative.
 - recent-sessions.md is capped at ~10 entries. Drop the oldest if needed.
 - Only update files where you have concrete information to add. Don't invent.
+- Treat last_reviewed as a semantic-validation date, not a batch-audit stamp.
 - Preserve existing YAML frontmatter structure.
 - Preserve wikilink syntax ([[note]]) in all files.
 - Report what you changed at the end.
@@ -181,7 +182,7 @@ After understanding the current state, update these files:
     if transcript:
         base += f"\n## Session transcript to process\n\n{transcript}\n"
     else:
-        base += "\n## Mode: refresh\nNo transcript provided. Read the current state and verify consistency. Fix any stale dates or obvious inconsistencies.\n"
+        base += "\n## Mode: refresh\nNo transcript provided. Read the current state and verify consistency. Do not bulk-refresh last_reviewed; only update it on files you semantically validate or change.\n"
 
     return base
 
@@ -197,7 +198,7 @@ Your job is to audit the vault's memory files and report issues.
 {"## Monthly audit scope" if level == "monthly" else "## Quarterly audit scope"}
 
 {"Scan all memory/ files. For each file:" if level == "monthly" else "Scan the entire vault. For each file:"}
-1. Check if last_reviewed is older than {"30 days" if level == "monthly" else "90 days"} — flag as stale
+1. Check if last_reviewed is older than {"30 days" if level == "monthly" else "90 days"} — flag as stale. Treat it as a semantic-validation date, not an audit timestamp.
 2. Check if relevance is still accurate based on content
 3. Look for redundant content across files
 4. Verify that ContextSummary.md matches the actual directory structure
@@ -406,7 +407,7 @@ Working directory: {vault_path}
    - Append to recent-sessions.md (cap at ~10 entries)
    - Update TASKS.md (mark completed, add new)
    - Update any relevant people/, projects/, or decisions/ files
-   - Update last_reviewed dates in YAML frontmatter
+   - Update last_reviewed dates in YAML frontmatter only for files semantically reviewed or changed
 4. Report what you changed.
 
 Preserve wikilink syntax ([[note]]) in all files.
@@ -425,7 +426,7 @@ Working directory: {vault_path}
 ## Task: {level} audit
 
 Scan all files in memory/. For each file:
-1. Check if last_reviewed is older than {"30" if level == "monthly" else "90"} days
+1. Check if last_reviewed is older than {"30" if level == "monthly" else "90"} days. Treat it as a semantic-validation date, not an audit timestamp.
 2. Verify relevance is accurate
 3. Look for redundant content across files
 4. Check ContextSummary.md matches actual structure

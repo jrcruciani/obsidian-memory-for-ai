@@ -16,13 +16,15 @@ The full system uses five components that you build incrementally:
 
 | Component | Purpose |
 |-----------|---------|
-| **Master document** (`CLAUDE.md`) | Identity, projects, preferences, interaction rules — the AI's entry point |
+| **Master document** (`CLAUDE.md`) | Tier 0 pointer: identity basics, interaction rules, and loading instructions — not the full memory |
 | **Memory folder** (`memory/`) | Structured files for people, projects, glossary, decisions, professional context |
 | **Context summaries** | Semantic index per folder so the AI navigates without reading everything |
 | **Task list** (`TASKS.md`) | Time-horizoned tasks the AI can query and update |
 | **Wikilinks & typed relationships** | `[[wikilinks]]` with verbs (`extends`, `supports`, `contradicts`…) that create a navigable knowledge graph |
 
 Start with just `CLAUDE.md` and `TASKS.md`. Add the rest as you need it.
+
+**Keep `CLAUDE.md` / `COPILOT.md` lean.** Treat them as Tier 0 routers, not warehouses. Detailed people/project context belongs in `memory/` and should load on demand through `ContextSummary.md`, the glossary, and related notes.
 
 ## See it in action
 
@@ -57,7 +59,7 @@ This is the question I get asked most. The short answer: because the trade-offs 
 
 - **Semantic search over large corpora.** If you have 10,000 notes and need to find "that thing about Byzantine trade routes" without knowing where it is, a vector database will find it faster. This system relies on explicit structure (summaries, glossary, wikilinks) instead of embeddings. At vault sizes under ~500 notes, grep and good organization are faster than any retrieval pipeline.
 - **Automatic relevance scoring.** Vector databases rank results by similarity. Here, you mark relevance manually (`high`/`medium`/`low` in frontmatter) and maintain it through periodic reviews. This is more work. It's also more accurate, because *you* know what's relevant better than an embedding model does.
-- **Automatic memory decay.** Systems like [Chetna](https://github.com/vineetkishore01/Chetna) implement Ebbinghaus-style decay curves in code. Here, decay is manual: you review `last_reviewed` dates and downgrade or archive stale entries. The guide includes explicit maintenance cadences (post-session, monthly, quarterly) to keep this sustainable.
+- **Automatic memory decay.** Systems like [Chetna](https://github.com/vineetkishore01/Chetna) implement Ebbinghaus-style decay curves in code. Here, decay is manual: you review `last_reviewed` dates and downgrade or archive stale entries. Treat `last_reviewed` as the date of **semantic validation**, not as a batch-audit stamp. The guide includes explicit maintenance cadences (post-session, monthly, quarterly) to keep this sustainable.
 - **Scaling past thousands of files.** This system is designed for personal context — the 50–500 files that define who you are, what you're working on, and how you think. It's not a replacement for a RAG pipeline over your company's entire knowledge base. It's the *personal layer* that sits on top of whatever else you use.
 
 ### When to use what
@@ -81,7 +83,7 @@ The honest take: if you're already running a RAG pipeline for other reasons, thi
 |------|-------------|
 | Claude Code (CLI) | Native — reads `CLAUDE.md` automatically from working directory + `~/.claude/CLAUDE.md` globally |
 | Claude Desktop (Cowork) | Via plugin — see [plugin-guide.md](plugin-guide.md) |
-| VS Code + GitHub Copilot | `COPILOT.md` as workspace context |
+| VS Code + GitHub Copilot | `COPILOT.md` as workspace context, with the same Tier 0 semantics as `CLAUDE.md` |
 | Obsidian CLI (1.12+) | Native vault commands for auditing, property management, and quick capture — see [obsidian-cli.md](obsidian-cli.md) |
 | Claude.ai / ChatGPT | Paste or attach at session start |
 | Cursor | `.cursorrules` or context files |

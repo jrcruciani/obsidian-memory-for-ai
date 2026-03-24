@@ -29,6 +29,7 @@ Once installed, you invoke `/memory-load` at the start of any Cowork session and
 The memory system as described in the guide works well with Claude Code (CLI) because it auto-loads `CLAUDE.md` from the working directory. But in **Cowork mode** (Claude Desktop), that auto-loading doesn't happen the same way. A plugin solves this by:
 
 - Making commands available in every session regardless of folder context
+- Letting `CLAUDE.md` stay lean instead of stuffing loading heuristics and maintenance logic into Tier 0
 - Encoding the loading strategy, update protocol, and maintenance checklist as executable instructions rather than prose the AI has to interpret
 - Giving you explicit slash commands instead of relying on the AI to remember what to do
 
@@ -101,7 +102,7 @@ After the frontmatter, write the skill body in Markdown. This should cover:
 
 - **Vault location** — the absolute path to your Obsidian vault
 - **Architecture** — the directory tree (memory/, people/, projects/, decisions/, etc.)
-- **Frontmatter convention** — the type/relevance/last_reviewed fields and what they mean
+- **Frontmatter convention** — the type/relevance/last_reviewed fields and what they mean (`last_reviewed` = semantic validation date, not audit timestamp)
 - **Context loading strategy** — what to load first (glossary, company, personality), what to load on demand (people, projects), what never to load all at once
 - **Wikilink conventions** — the `## Links relacionados` pattern and relationship verbs (extends, supports, contradicts, source, applies, part_of, related)
 - **Decision record format** — DEC-XXX naming, required sections
@@ -128,9 +129,9 @@ The `references/` directory holds detailed content that the skill body reference
 - [ ] Update notes affected during the session
 - [ ] Update memory/ContextSummary.md if navigation changed
 - [ ] Create decision note if rationale should persist
-- [ ] Adjust `last_reviewed` in touched files
+- [ ] Adjust `last_reviewed` only in files that were semantically reviewed or changed
 - [ ] Update TASKS.md (mark completed, add new)
-- [ ] Update CLAUDE.md if profile/projects/preferences changed
+- [ ] Update CLAUDE.md if Tier 0 instructions or the high-level profile summary changed
 
 ## Monthly review
 - [ ] Flag files where `last_reviewed` is older than 30 days
@@ -185,8 +186,8 @@ allowed-tools: Read, Write, Edit, Glob, Grep
 Instruct Claude to:
 
 1. Review the conversation and identify what changed (profile, memory, tasks, structure, decisions)
-2. Edit affected files: `CLAUDE.md` for profile changes, `memory/` files for domain changes, `TASKS.md` for completed/new tasks
-3. Update `last_reviewed` dates in frontmatter
+2. Edit affected files: `CLAUDE.md` only for Tier 0/profile-summary changes, `memory/` files for domain changes, `TASKS.md` for completed/new tasks
+3. Update `last_reviewed` only on files that were semantically validated or changed
 4. Add new glossary terms if shorthand was established during the session
 5. Add wikilinks if new thematic connections emerged
 6. If a significant decision was made, suggest running `/memory-decide`
@@ -204,11 +205,11 @@ argument-hint: [monthly|quarterly]
 
 Instruct Claude to read the maintenance checklist from the skill's references, then execute the appropriate level based on the argument:
 
-- **monthly** (default): scan frontmatter for stale `last_reviewed`, audit relevance distribution, check for redundancy, find missing wikilinks, verify ContextSummary accuracy
+- **monthly** (default): scan frontmatter for stale `last_reviewed` (semantic validation date), audit relevance distribution, check for redundancy, find missing wikilinks, verify ContextSummary accuracy
 - **quarterly**: all monthly checks plus orphan detection, category review, master doc balance check, decision coverage, link type quality
 - **micro**: quick post-session check
 
-Output should be a structured report with severity levels (critical/warning/info) and proposed changes that require confirmation before applying.
+Output should be a structured report with severity levels (critical/warning/info) and proposed changes that require confirmation before applying. Audits should **not** bulk-refresh `last_reviewed` after a mechanical scan.
 
 #### `commands/memory-decide.md`
 

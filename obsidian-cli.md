@@ -7,7 +7,7 @@
 
 Obsidian CLI lets you control Obsidian from the terminal. For memory systems, this means you can audit, query, and update your vault programmatically — without the AI reading every file into context, and without parsing YAML or resolving wikilinks manually.
 
-This document covers three high-value recipes: a **health audit** you can run in seconds, a **property sweep** that keeps frontmatter current, and **quick capture** commands for appending to memory files from the terminal.
+This document covers three high-value recipes: a **health audit** you can run in seconds, a **property sweep** for inspecting and selectively updating frontmatter, and **quick capture** commands for appending to memory files from the terminal.
 
 ---
 
@@ -166,9 +166,9 @@ obsidian $VAULT_FLAG backlinks path="memory/working-context.md" total
 
 ## Recipe 2: Property sweep
 
-**What it does:** Updates `last_reviewed` dates in frontmatter across your memory files, and lets you check/set `relevance` without opening each file.
+**What it does:** Lets you inspect `last_reviewed` / `relevance` and update them selectively after real review — without opening each file.
 
-**When to run:** After a maintenance session, or monthly to mark which files you've actually reviewed.
+**When to run:** After a maintenance session, or when you've semantically reviewed a specific note and want to record that fact.
 
 ### Individual commands
 
@@ -177,7 +177,7 @@ obsidian $VAULT_FLAG backlinks path="memory/working-context.md" total
 obsidian property:read name=last_reviewed path="memory/glossary.md"
 # → 2026-03-23
 
-# Update last_reviewed to today
+# After semantically reviewing the file, update last_reviewed to today
 obsidian property:set name=last_reviewed value=2026-03-24 path="memory/glossary.md"
 
 # Check relevance
@@ -187,47 +187,15 @@ obsidian property:read name=relevance path="memory/people/valeria.md"
 obsidian property:set name=relevance value=medium path="memory/projects/old-project.md"
 ```
 
-### Sweep script — update `last_reviewed` for all memory files
+### Safe pattern — do not batch-refresh `last_reviewed`
+
+> [!WARNING] Avoid the common anti-pattern
+> Don't set `last_reviewed` across every file in `memory/` just because you ran an audit. That turns the field into a maintenance timestamp instead of a semantic freshness signal.
+
+Use the stale-file script below to generate a review queue. Then, after checking a file, update it explicitly:
 
 ```bash
-#!/bin/bash
-# memory-sweep.sh — Update last_reviewed on all memory/ files
-# Usage: ./memory-sweep.sh [vault-name]
-
-export PATH="$PATH:/Applications/Obsidian.app/Contents/MacOS"
-
-TODAY=$(date +%Y-%m-%d)
-VAULT="${1:-}"
-VAULT_FLAG=""
-[[ -n "$VAULT" ]] && VAULT_FLAG="vault=$VAULT"
-
-echo "🧹 Property sweep — setting last_reviewed=$TODAY"
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-
-# Get all .md files in memory/
-FILES=$(obsidian $VAULT_FLAG files folder=memory ext=md 2>&1)
-
-COUNT=0
-SKIPPED=0
-
-while IFS= read -r filepath; do
-  [[ -z "$filepath" ]] && continue
-
-  # Check if file has last_reviewed property
-  CURRENT=$(obsidian $VAULT_FLAG property:read name=last_reviewed path="$filepath" 2>&1)
-
-  if [[ "$CURRENT" == *"not found"* ]] || [[ "$CURRENT" == *"No property"* ]] || [[ -z "$CURRENT" ]]; then
-    ((SKIPPED++))
-    continue
-  fi
-
-  obsidian $VAULT_FLAG property:set name=last_reviewed value="$TODAY" path="$filepath" 2>&1
-  echo "  ✅ $filepath ($CURRENT → $TODAY)"
-  ((COUNT++))
-done <<< "$FILES"
-
-echo ""
-echo "Updated: $COUNT files | Skipped (no last_reviewed): $SKIPPED"
+obsidian property:set name=last_reviewed value=2026-03-24 path="memory/glossary.md"
 ```
 
 ### Targeted sweep — only files not reviewed in N days

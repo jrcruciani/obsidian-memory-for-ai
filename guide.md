@@ -100,7 +100,7 @@ The system organizes context into three loading tiers — a pattern inspired by 
 | **Tier 1 — Working memory** | `glossary.md`, `company.md`, `personality.md`, `working-context.md` | Always, at session start | RAM |
 | **Tier 2 — Reference memory** | `people/`, `projects/`, `decisions/`, `recent-sessions.md` | On demand, when the topic requires it | Disk |
 
-**Tier 0** is read-only during a session — it's your identity and system instructions. The AI reads it once and doesn't modify it mid-session.
+**Tier 0** is read-only during a session — it's your identity basics, interaction rules, and loading instructions. Think of it as a **router**, not a warehouse. The AI reads it once and doesn't modify it mid-session.
 
 **Tier 1** is the active working set. These files are small, dense, and always relevant. The `working-context.md` file (described below) is the one piece of Tier 1 that the AI *writes to* at session end — a mutable snapshot of what matters right now.
 
@@ -121,16 +121,12 @@ This is the heart of the system. It loads automatically at the start of each Cla
 
 ## Who I am
 - Name, role, place of residence
-- Current profession and specialization
-- Relevant personal situation (family, projects, status)
+- Only the identity facts the AI genuinely needs in most sessions
 
-## Intellectual profile
-- How I think, what theoretical frameworks I use
-- Authors/topics that influence me
-- Personal concepts or frameworks
-
-## Active projects
-(references to the corresponding folders/files)
+## Where my memory lives
+- Absolute vault path
+- Key entry points: `memory/ContextSummary.md`, `memory/glossary.md`, `TASKS.md`
+- Instruction to load detailed people/project context from `memory/`, not from this file
 
 ## How to interact with me
 - Preferred tone (formal / peer / technical)
@@ -138,10 +134,10 @@ This is the heart of the system. It loads automatically at the start of each Cla
 - Things I value: complexity, citations, connections across disciplines
 - Things to avoid: disclaimers, oversimplification, condescension
 
-## Tech stack and environment
-- What tools I use
-- Where repos live
-- Project conventions
+## Operating rules
+- Security / privacy constraints
+- Tool preferences
+- Update protocol
 
 ## Update protocol
 (instructions to the AI about what to update at the end of each session)
@@ -149,7 +145,7 @@ This is the heart of the system. It loads automatically at the start of each Cla
 
 ### Golden rule of the master document
 
-**Dense but scannable.** The AI reads it in full at the start. If it's too long, it loses relevance in longer conversations. Aim for 400–800 lines max. Anything that doesn't fit here goes in `memory/`.
+**Use Tier 0 as a router, not a warehouse.** The AI reads it in full at the start. In practice, smaller is better: often **50–200 lines** is enough. If you find yourself pasting detailed biographies, project state, or long preference lists here, move them into `memory/` and load them on demand.
 
 ---
 
@@ -188,7 +184,7 @@ last_reviewed: 2026-03-15
 | `medium` | Useful in specific contexts | Load when the topic comes up |
 | `low` | Historical or rarely needed | Candidate for archival |
 
-**Last reviewed** is a date that helps you track freshness. During periodic maintenance, ask the AI: *"Review all memory/ files and flag any where `last_reviewed` is older than 3 months."*
+**Last reviewed** is a semantic freshness signal. It marks when a note was **actually validated or meaningfully updated**, not just when an audit script touched it. During periodic maintenance, ask the AI: *"Review all memory/ files and flag any where `last_reviewed` is older than 3 months."*
 
 This is the manual equivalent of importance scoring and memory decay in automated systems — without running any code. The AI reads the frontmatter, prioritizes `high` relevance files, and you periodically prune `low` relevance entries to keep context lean.
 
@@ -611,7 +607,7 @@ My knowledge base and AI memory lives at:
 
 When I mention "the vault", "my notes", or reference people/projects by short names,
 read the relevant files from that path. Key entry points:
-- CLAUDE.md — full personal context
+- CLAUDE.md — Tier 0 context and loading rules
 - memory/ContextSummary.md — what to load first
 - memory/glossary.md — internal vocabulary
 - TASKS.md — current tasks
@@ -647,7 +643,7 @@ Build a script that maintains your memory files autonomously — session-end upd
 **Recommendation:** Start with Option 1. It takes two minutes, works immediately, and covers 90% of use cases. If you use Claude Desktop (Cowork) heavily, Option 3 gives you the best experience there. If you want automated maintenance that runs on a schedule, Option 5 is the way to go. Move to Option 4 only if you need programmatic memory access from custom tools.
 
 ### VS Code + GitHub Copilot
-Use `COPILOT.md` (a copy of `CLAUDE.md`) in the root directory. Copilot can include it as workspace context.
+Use `COPILOT.md` in the root directory with the **same Tier 0 semantics** as `CLAUDE.md`. Keep one as the source of truth or sync them deliberately — don't let them drift into two different master documents.
 
 ### Claude.ai / ChatGPT (web)
 Create a **custom system instruction** (in Settings → Custom Instructions or equivalent) using a condensed version of the master document. For intensive sessions, paste the full `CLAUDE.md` at the start of the chat.
@@ -666,13 +662,14 @@ Include this at the end of your `CLAUDE.md`:
 
 Mandatory rule: at the end of each relevant session, update:
 
-1. **CLAUDE.md** — if anything changes about my profile, projects, or preferences
+1. **CLAUDE.md / COPILOT.md** — only if Tier 0 instructions or the high-level profile summary changed
 2. **ContextSummary.md** of the affected folder — reflect changes made
 3. **memory/ContextSummary.md** — if the structure or loading logic of memory changed
 4. **memory/** — update people, project, or decision files if applicable
-5. **TASKS.md** — mark completed tasks or add new ones
-6. **memory/working-context.md** — rewrite to reflect current state
-7. **memory/recent-sessions.md** — append a one-line entry for this session
+5. **`last_reviewed`** — update it only on files whose content you semantically validated or changed
+6. **TASKS.md** — mark completed tasks or add new ones
+7. **memory/working-context.md** — rewrite to reflect current state
+8. **memory/recent-sessions.md** — append a one-line entry for this session
 ```
 
 ### Proactive memory triggers
@@ -707,7 +704,7 @@ Beyond session-by-session updates, schedule occasional full-vault reviews. Ask t
 - **Review decision coverage** — ensure important workflow or structural changes are captured in `memory/decisions/`
 - **Flag stale information** — projects marked "active" that haven't been touched in months
 - **Identify orphan notes** — files with no incoming or outgoing links
-- **Review memory relevance** — check `last_reviewed` dates in `memory/` frontmatter, downgrade `relevance` for entries that haven't been relevant in months, and archive or remove `low` relevance files that no longer serve current context
+- **Review memory relevance** — check `last_reviewed` dates in `memory/` frontmatter, treat them as semantic freshness signals (not audit timestamps), downgrade `relevance` for entries that haven't been relevant in months, and archive or remove `low` relevance files that no longer serve current context
 - **Strengthen link types** — upgrade vague `related` links to more specific verbs (`extends`, `supports`, `contradicts`, etc.) as the AI learns more about your vault
 
 This kind of structural maintenance is tedious for humans but trivial for an AI with file access. A single session can add hundreds of links and bring every summary file up to date.
@@ -722,7 +719,7 @@ Don't treat maintenance as an occasional vague intention. Give it explicit caden
 
 | Cadence | Scope | Typical actions |
 |---------|-------|-----------------|
-| Post-session | Affected files only | Update notes, adjust `last_reviewed`, update `memory/ContextSummary.md`, record a decision if rationale should persist |
+| Post-session | Affected files only | Update notes, adjust `last_reviewed` on files actually reviewed, update `memory/ContextSummary.md`, record a decision if rationale should persist |
 | Monthly | `memory/` | Review stale notes, downgrade `relevance`, merge redundancies, add missing links |
 | Quarterly | Whole system | Archive low-value memory, review all summaries, check master doc balance, review decision coverage |
 

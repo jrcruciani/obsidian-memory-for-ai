@@ -8,7 +8,7 @@ A complete, working example of the memory system described in the [guide](../../
 
 ```
 minimal-vault/
-├── CLAUDE.md                          ← Master context document
+├── CLAUDE.md                          ← Tier 0 context / router
 ├── TASKS.md                           ← Time-horizoned task list
 └── memory/
     ├── ContextSummary.md              ← What to load first vs. on demand
@@ -37,11 +37,11 @@ minimal-vault/
 
 ## Things to notice
 
-- **CLAUDE.md is under 80 lines.** Dense, scannable, no filler. Everything else lives in `memory/`.
+- **CLAUDE.md is under 80 lines.** Dense, scannable, no filler. It's a router, not a warehouse. Everything else lives in `memory/`.
 - **The glossary resolves ambiguity.** "The manuscript" means the Strasbourg MS. "GG" means the museum. The AI won't have to guess.
 - **People profiles include what matters for AI context**, not a full biography. Marta's communication preferences and data format expectations are there because they affect collaboration.
 - **The decision record captures *why*, not just *what*.** DEC-001 explains why Markdown+CSV was chosen over SQLite — so a future session won't suggest the same rejected alternatives.
 - **`working-context.md` is a mutable snapshot.** It captures what matters *right now* — active threads, pending items, recent decisions — so the AI has temporal context without loading full project files. The AI rewrites it at session end.
 - **`recent-sessions.md` is a recency buffer.** One line per session, capped at ~10 entries. It gives the AI a sense of momentum and sequence without full conversation replay.
 - **Wikilinks with relationship verbs** (`supports:`, `applies:`, `related:`) connect files into a navigable graph.
-- **Frontmatter is minimal but consistent.** Type, relevance, last_reviewed on every memory file.
+- **Frontmatter is minimal but consistent.** Type, relevance, last_reviewed on every memory file — and `last_reviewed` means semantic review, not "a bot touched this file during an audit."

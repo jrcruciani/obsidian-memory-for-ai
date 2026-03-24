@@ -27,6 +27,8 @@ Current assignment: condition survey of the Cranach panels in Gallery 5.
 A micro-blog about the hidden layers in paintings — scientific analysis meets art history.
 Published on micro.blog, written in Obsidian.
 
+> Detailed collaborator, project, and decision context lives in `memory/`. This file is Tier 0: orientation, not the full archive.
+
 ## How to interact with me
 - **Language:** English. I read German source texts but think in English.
 - **Tone:** Direct, technical when needed, no hand-holding
@@ -55,7 +57,7 @@ Each folder has a `ContextSummary.md` with its semantic index.
 
 At the end of each relevant session, update:
 
-1. **This file** — if my profile, projects, or preferences changed
+1. **This file** — only if Tier 0 instructions or my high-level profile summary changed
 2. **`ContextSummary.md`** of the affected folder — reflect changes made
 3. **`memory/`** — update people, project, glossary, or decision files if applicable
 4. **`TASKS.md`** — mark completed tasks or add new ones

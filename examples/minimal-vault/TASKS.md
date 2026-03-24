@@ -5,7 +5,7 @@
 
 ## Recurring
 - [ ] **Zotero sync** — export new citations to vault — due 2026-03-22 🔁 weekly
-- [ ] **Memory maintenance** — review memory/ files, update last_reviewed — due 2026-04-01 🔁 monthly
+- [ ] **Memory maintenance** — review memory/ files, validate content, update last_reviewed only on notes actually reviewed — due 2026-04-01 🔁 monthly
 
 ## Upcoming
 - [ ] **Conference abstract** — Technart 2026 submission on lead-tin yellow variants — due 2026-04-15
