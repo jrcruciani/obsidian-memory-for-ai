@@ -2,6 +2,9 @@
 
 > **Requires:** Obsidian 1.12+ with CLI enabled (Settings → General → Command line interface). The Obsidian app must be running.
 
+> [!tip] **CLI-first principle**
+> If Obsidian is running and a CLI command can accomplish what you need — reading files, searching, updating properties, auditing links, toggling tasks — **always prefer it** over reading files into AI context, parsing YAML manually, or using grep/sed on raw Markdown. The CLI uses Obsidian's native index, resolves wikilinks correctly, and updates the graph automatically. Fall back to direct file I/O only when the CLI can't do the job (headless environments, remote access, bulk content rewrites).
+
 Obsidian CLI lets you control Obsidian from the terminal. For memory systems, this means you can audit, query, and update your vault programmatically — without the AI reading every file into context, and without parsing YAML or resolving wikilinks manually.
 
 This document covers three high-value recipes: a **health audit** you can run in seconds, a **property sweep** that keeps frontmatter current, and **quick capture** commands for appending to memory files from the terminal.
