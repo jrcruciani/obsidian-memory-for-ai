@@ -20,6 +20,8 @@ The full system uses five components that you build incrementally:
 | **Memory folder** (`memory/`) | Structured files for people, projects, glossary, decisions, professional context |
 | **Context summaries** | Semantic index per folder so the AI navigates without reading everything |
 | **Task list** (`TASKS.md`) | Time-horizoned tasks the AI can query and update |
+| **Triggers** (`memory/triggers.md`) | Keyword-activated rules for reactive file loading and proactive memory writing |
+| **Interaction modes** (`memory/modes.md`) | Explicit tone/behavior profiles (e.g. research, writing, logistics) activated by triggers or `/mode [name]` |
 | **Wikilinks & typed relationships** | `[[wikilinks]]` with verbs (`extends`, `supports`, `contradicts`…) that create a navigable knowledge graph |
 
 Start with just `CLAUDE.md` and `TASKS.md`. Add the rest as you need it.
@@ -95,6 +97,8 @@ The honest take: if you're already running a RAG pipeline for other reasons, thi
 The memory classification system (type tagging, relevance scoring, and relationship types between memories) was inspired by [**Chetna**](https://github.com/vineetkishore01/Chetna), a Rust-based memory system for AI agents by [@vineetkishore01](https://github.com/vineetkishore01). Chetna implements these concepts as code — importance scoring, Ebbinghaus decay curves, typed relationships in a database. This project adapts the same ideas as pure Markdown conventions.
 
 The memory hierarchy model, working context block, rolling session summaries, memory pressure protocol, and proactive update triggers were inspired by [**MemGPT**](https://research.memgpt.ai) (Packer et al., 2023), which demonstrated that LLMs benefit from OS-style tiered memory management — paging information between a small working context and larger archival storage. This project translates those patterns from code and databases into plain Markdown files and loading conventions.
+
+The formalized trigger tables (keyword → file + action) and explicit interaction modes were inspired by [**Open-Her OS**](https://github.com/kitfoxs/open-her-os), an open-source AI companion framework by Kit & Ada Marie. Open-Her OS uses a *lorebook* (character book) with keyword-activated behavioral entries and *companion modes* that modulate AI behavior contextually. This project adapts both concepts as Markdown tables — `triggers.md` for reactive file loading and proactive memory writing, and `modes.md` for explicit tone and priority calibration across different session types.
 
 ---
 

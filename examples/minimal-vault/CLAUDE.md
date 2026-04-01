@@ -61,3 +61,12 @@ At the end of each relevant session, update:
 2. **`ContextSummary.md`** of the affected folder — reflect changes made
 3. **`memory/`** — update people, project, glossary, or decision files if applicable
 4. **`TASKS.md`** — mark completed tasks or add new ones
+
+### Triggers and interaction modes
+
+The system uses two files in `memory/` for reactive loading and tone calibration:
+
+- **`memory/triggers.md`** — Formalized rules: which Tier 2 files to load when keywords appear, and when to propose memory updates. Single source of truth.
+- **`memory/modes.md`** — Interaction modes (research, writing, conservation, default). Activated by context or explicitly with `/mode [name]`.
+
+For `TASKS.md`, act directly without confirmation.

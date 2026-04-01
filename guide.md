@@ -29,6 +29,8 @@
    - [Working from a different project directory](#working-from-a-different-project-directory)
 10. [Update protocol](#update-protocol-instructions-for-the-ai)
     - [Proactive memory triggers](#proactive-memory-triggers)
+    - [Formalized triggers: `triggers.md`](#formalized-triggers-triggersmd)
+    - [Interaction modes: `modes.md`](#interaction-modes-modesmd)
     - [Periodic maintenance](#periodic-maintenance-let-the-ai-audit-the-vault)
     - [Maintenance cadence](#turn-maintenance-into-a-real-routine)
 11. [Typical workflow](#typical-workflow)
@@ -694,6 +696,90 @@ For TASKS.md updates, just do it — no confirmation needed.
 **Why proactive beats reactive:** At session end, the AI has to reconstruct what happened from its conversation history. Mid-session, the context is fresh and the update is precise. This is the plain-text equivalent of MemGPT's self-directed working context edits — the AI manages its own memory as the conversation evolves.
 
 This turns the AI into a co-maintainer of the system. At the end of any working session you can ask: "Update the relevant memory files with what we did today."
+
+### Formalized triggers: `triggers.md`
+
+Once your proactive triggers grow beyond a handful of rules, or once you have enough people, projects, and contexts that the AI struggles to know *which* file to load *when*, consider extracting the trigger logic into its own file: `memory/triggers.md`.
+
+This idea is inspired by the *lorebook* (character book) concept from [Open-Her OS](https://github.com/kitfoxs/open-her-os), which uses keyword-activated entries to modulate AI behavior contextually. Adapted to a Markdown memory system, the lorebook becomes a trigger table:
+
+```markdown
+# Triggers
+
+## Loading triggers
+
+| Keywords / signal | Files to load | Suggested mode |
+|---|---|---|
+| Marcus, scientific illustration | `people/marcus-hoekstra.md` | — |
+| Concordance, pigment, recipe | `projects/concordance.md` | research |
+| blog, Strata, post | — | writing |
+| what did we decide, why this way | `decisions/` | — |
+| continue, last session, catch up | `recent-sessions.md` | — |
+
+## Writing triggers
+
+| Signal detected | Action | Confirmation |
+|---|---|---|
+| New fact about a person | Propose adding to `people/[name].md` | Ask first |
+| Decision made with rationale | Propose new DEC- entry | Ask first |
+| Task completed or created | Update TASKS.md directly | No confirmation |
+```
+
+**Benefits over prose triggers:**
+
+- **Auditable.** You can scan the table and immediately see if a person or project is missing.
+- **Single source of truth.** Instead of triggers scattered across `CLAUDE.md`, `ContextSummary.md`, and the glossary, one file has all the rules.
+- **Extensible.** Adding a new person or project means adding one row, not editing three files.
+- **Mode-aware.** The "Suggested mode" column connects triggers to interaction modes (see below).
+
+Keep triggers as Tier 1.5: the AI knows the file exists (referenced from the master document) and consults it on demand, but doesn't need to read it in full at session start.
+
+### Interaction modes: `modes.md`
+
+AI assistants implicitly adapt their tone based on context — but without explicit guidance, they get it wrong. They respond efficiently when you're philosophizing, or get reflective when you need a checklist. Interaction modes make the calibration explicit.
+
+This is inspired by the *companion modes* from [Open-Her OS](https://github.com/kitfoxs/open-her-os) (default, comfort, playful, deep talk), adapted to the practical contexts of a knowledge worker's vault.
+
+```markdown
+# Interaction modes
+
+## research
+- **When:** Data analysis, source texts, hypothesis work
+- **Tone:** Precise, technical, hypothesis-driven
+- **Behavior:** Cite sources, flag uncertainty, propose next steps
+
+## writing
+- **When:** Blog posts, documentation, narrative work
+- **Tone:** Clear, engaging, collaborative
+- **Behavior:** Suggest structure, the author decides
+
+## logistics
+- **When:** Tasks, travel, appointments, purchases
+- **Tone:** Direct, efficient, no digressions
+- **Behavior:** Checklists, confirm dates/times, action items
+
+## default
+- **When:** Everything else
+- **Tone:** Collegial, natural
+- **Behavior:** Detect context; if another mode fits, transition smoothly
+```
+
+**How modes connect to triggers:**
+
+The trigger table's "Suggested mode" column creates a direct link: when a keyword activates a trigger, the AI loads the specified files *and* shifts to the suggested interaction mode. This means:
+
+1. User mentions "Concordance" → trigger fires → load `projects/concordance.md` → activate `research` mode
+2. User says "write a blog post" → trigger fires → activate `writing` mode
+3. User asks about travel plans → trigger fires → load `viajes.md` → activate `logistics` mode
+
+Modes can also be activated manually: `/mode research`, `/mode writing`, etc. This is useful when the context is ambiguous or when you want to override the automatic detection.
+
+**Design principles for modes:**
+
+- Keep them few (3–6). More than that and the AI spends more time mode-switching than being useful.
+- Each mode should have a clear tone shift. If two modes sound the same, merge them.
+- Modes are advisory, not rigid. The AI can and should blend them when a conversation spans multiple contexts.
+- Include a `default` mode that covers everything else and handles mode detection.
 
 ### Periodic maintenance: let the AI audit the vault
 
