@@ -49,7 +49,8 @@ Published on micro.blog, written in Obsidian.
 - **Concordance/** — The mapping project: recipes → spectra → identifications
 - **Gallery/** — Work notes, condition reports, treatment proposals
 - **Blog/** — Draft and published posts for Strata
-- **memory/** — AI memory system (this folder)
+- **sources/** — Raw inputs: articles, book notes, podcast transcripts. AI reads but never modifies.
+- **memory/** — AI memory wiki (see `memory/index.md` for catalog, `memory/schema.md` for conventions)
 
 Each folder has a `ContextSummary.md` with its semantic index.
 
@@ -57,16 +58,26 @@ Each folder has a `ContextSummary.md` with its semantic index.
 
 At the end of each relevant session, update:
 
-1. **This file** — only if Tier 0 instructions or my high-level profile summary changed
+1. **This file** — only if Tier 0 instructions changed
 2. **`ContextSummary.md`** of the affected folder — reflect changes made
-3. **`memory/`** — update people, project, glossary, or decision files if applicable
-4. **`TASKS.md`** — mark completed tasks or add new ones
+3. **`memory/index.md`** — if new pages were created or renamed
+4. **`memory/`** — update people, project, glossary, decision, or insight files if applicable
+5. **`TASKS.md`** — mark completed tasks or add new ones
+6. **`memory/working-context.md`** — rewrite to reflect current state
+7. **`memory/log.md`** — append entry: `## [date] operation | topic`
+8. **Ask:** "Any insight from this session worth filing in `insights/`?"
+
+### Operations (v2.0)
+
+The system supports four formal operations. See `memory/schema.md`:
+- **Ingest** — process sources into wiki pages (`/ingest`)
+- **Query** — ask questions + file insights back
+- **Lint** — expanded health-check
+- **Log** — structured chronological record
 
 ### Triggers and interaction modes
 
-The system uses two files in `memory/` for reactive loading and tone calibration:
-
-- **`memory/triggers.md`** — Formalized rules: which Tier 2 files to load when keywords appear, and when to propose memory updates. Single source of truth.
-- **`memory/modes.md`** — Interaction modes (research, writing, conservation, default). Activated by context or explicitly with `/mode [name]`.
+- **`memory/triggers.md`** — Keyword → file loading rules + proactive writing rules.
+- **`memory/modes.md`** — Interaction modes (research, writing, conservation, ingest, default). Activated by context or `/mode [name]`.
 
 For `TASKS.md`, act directly without confirmation.
