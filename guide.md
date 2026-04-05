@@ -1,47 +1,51 @@
 # AI Memory System with Obsidian
-## A guide to replicating persistent context across AI sessions
+## A guide to building a persistent, compounding wiki for AI sessions
 
 > **Who this is for:** Anyone who uses AI (Claude, Copilot, ChatGPT, etc.) regularly and wants the AI to "know you" without having to re-explain yourself every time.
+>
+> **Version 2.0** — *The Compiled Wiki.* Three layers, four operations. The AI does the bookkeeping; you direct the inquiry.
 
 ---
 
 ## Table of contents
 
 1. [The problem this solves](#the-problem-this-solves)
-2. [General architecture](#general-architecture)
+2. [General architecture: three layers](#general-architecture-three-layers)
 3. [Memory hierarchy](#memory-hierarchy)
-4. [Component 1: The master document (`CLAUDE.md`)](#component-1-the-master-document-claudemd)
-5. [Component 2: The `memory/` folder](#component-2-the-memory-folder)
-   - [Memory classification and relevance](#memory-classification-and-relevance)
-   - [`ContextSummary.md` — Operational memory index](#contextsummarymd-inside-memory--operational-memory-index)
-   - [`working-context.md` — Mutable session state](#working-contextmd--mutable-session-state)
-   - [`recent-sessions.md` — Rolling session log](#recent-sessionsmd--rolling-session-log)
+4. [Layer 1: Sources](#layer-1-sources)
+5. [Layer 2: The Wiki](#layer-2-the-wiki-memory)
+   - [`schema.md` — Wiki operating manual](#schemamd--wiki-operating-manual)
+   - [`index.md` — Content catalog](#indexmd--content-catalog)
+   - [`log.md` — Operations log](#logmd--operations-log)
    - [`glossary.md` — Internal vocabulary](#glossarymd--internal-vocabulary)
-   - [`people/` — People profiles](#peoplenamedmd--people-profiles)
-   - [`projects/` — Active projects](#projectsprojectmd--active-projects)
-   - [`decisions/` — Decision memory](#decisionsdecisionmd--decision-memory)
-   - [`context/company.md` — Professional environment](#contextcompanymd--professional-environment)
-   - [`context/personality.md` — Personality profile](#contextpersonalitymd--personality-profile-optional)
-6. [Component 3: `ContextSummary.md` in each folder](#component-3-contextsummarymd-in-each-folder)
-7. [Component 4: `TASKS.md`](#component-4-tasksmd)
-8. [Component 5: Wikilinks and the knowledge graph](#component-5-wikilinks-and-the-knowledge-graph)
-9. [How it integrates with AI tools](#how-it-integrates-with-ai-tools)
-   - [Working from a different project directory](#working-from-a-different-project-directory)
-10. [Update protocol](#update-protocol-instructions-for-the-ai)
-    - [Proactive memory triggers](#proactive-memory-triggers)
-    - [Formalized triggers: `triggers.md`](#formalized-triggers-triggersmd)
-    - [Interaction modes: `modes.md`](#interaction-modes-modesmd)
-    - [Periodic maintenance](#periodic-maintenance-let-the-ai-audit-the-vault)
-    - [Maintenance cadence](#turn-maintenance-into-a-real-routine)
-11. [Typical workflow](#typical-workflow)
+   - [`working-context.md` — Mutable session state](#working-contextmd--mutable-session-state)
+   - [`people/` — People profiles](#people--people-profiles)
+   - [`projects/` — Active projects](#projects--active-projects)
+   - [`decisions/` — Decision memory](#decisions--decision-memory)
+   - [`insights/` — Filed-back knowledge](#insights--filed-back-knowledge)
+   - [`context/` — Stable structural context](#context--stable-structural-context)
+   - [Memory classification and relevance](#memory-classification-and-relevance)
+6. [Layer 3: The Schema](#layer-3-the-schema-claudemd)
+7. [Four operations](#four-operations)
+   - [Ingest](#ingest)
+   - [Query + File-back](#query--file-back)
+   - [Lint](#lint)
+   - [Log](#log)
+8. [Reactive loading: triggers and modes](#reactive-loading-triggers-and-modes)
+   - [Triggers](#formalized-triggers-triggersmd)
+   - [Interaction modes](#interaction-modes-modesmd)
+9. [Supporting components](#supporting-components)
+   - [`TASKS.md`](#tasksmd)
+   - [`ContextSummary.md` per folder](#contextsummarymd-per-folder)
+   - [Wikilinks and the knowledge graph](#wikilinks-and-the-knowledge-graph)
+10. [How it integrates with AI tools](#how-it-integrates-with-ai-tools)
+11. [Update protocol](#update-protocol)
 12. [Context pressure and progressive loading](#context-pressure-and-progressive-loading)
-    - [Memory pressure](#memory-pressure-when-to-stop-loading)
-    - [Progressive retrieval](#progressive-retrieval-search--scan--load)
-13. [Implementation recommendations](#implementation-recommendations)
-    - [Security](#a-note-on-security)
-14. [Compatible tools](#compatible-tools)
-15. [Why Obsidian and not something else](#why-obsidian-and-not-something-else)
-16. [How the system evolves](#how-the-system-evolves)
+13. [Maintenance cadences](#maintenance-cadences)
+14. [Implementation recommendations](#implementation-recommendations)
+15. [Compatible tools](#compatible-tools)
+16. [Why Obsidian and not something else](#why-obsidian-and-not-something-else)
+17. [Philosophy: how the system evolves](#philosophy-how-the-system-evolves)
 
 ---
 
@@ -49,257 +53,184 @@
 
 AI assistants have no memory between sessions. Every conversation starts blank. If you have complex projects, a rich life, and well-defined preferences, this forces you to constantly repeat context — or settle for generic responses.
 
-This system turns Obsidian into an "externalized memory" that you can inject into any AI session.
+Most solutions look like RAG: upload documents, let the AI retrieve relevant chunks at query time. This works, but the AI rediscovers knowledge from scratch on every question. There's no accumulation. Ask a question that requires synthesizing five documents, and it has to find and piece together the fragments every time.
+
+The idea here is different. Instead of just retrieving from raw documents at query time, the AI **incrementally builds and maintains a persistent wiki** — a structured, interlinked collection of Markdown files that sits between you and the raw sources. When you add a new source, the AI reads it, extracts key information, and integrates it into the existing wiki. The knowledge is compiled once and kept current, not re-derived on every query.
+
+**The wiki is a persistent, compounding artifact.** The cross-references are already there. The contradictions have already been flagged. The synthesis already reflects everything you've read. It gets richer with every source you add and every question you ask.
 
 ---
 
-## General architecture
+## General architecture: three layers
 
 ```
 vault/
-├── CLAUDE.md              ← Master context document (auto-loaded by Claude Code)
-├── COPILOT.md             ← Identical copy for VS Code Copilot (or any other AI)
+├── CLAUDE.md              ← Layer 3: Schema (identity, rules, loading instructions)
+├── COPILOT.md             ← Same content, for VS Code Copilot
 ├── TASKS.md               ← Active, recurring, upcoming, and someday tasks
 │
-├── memory/                     ← Structured memory by domain
-│   ├── ContextSummary.md       ← Operational index: what to load first vs. on demand
-│   ├── working-context.md      ← Mutable state: what matters right now (updated each session)
-│   ├── recent-sessions.md      ← Rolling log of last ~10 sessions
-│   ├── glossary.md             ← Acronyms, internal terms, nicknames
-│   ├── people/                 ← One .md per relevant person
-│   │   ├── person1.md
-│   │   └── person2.md
-│   ├── projects/               ← One .md per active project
-│   │   ├── project-a.md
-│   │   └── project-b.md
-│   ├── decisions/              ← Durable decisions and their rationale
-│   │   ├── ContextSummary.md
-│   │   └── DEC-001 - Example decision.md
-│   └── context/                ← Stable structural context
-│       ├── company.md          ← Professional environment, tools, processes
-│       └── personality.md      ← Personality profile (optional but powerful)
+├── sources/                    ← Layer 1: Raw inputs (immutable)
+│   ├── articles/               ← Web clips, research articles
+│   ├── notes/                  ← Podcast notes, book highlights, meeting transcripts
+│   └── assets/                 ← Images, screenshots referenced by sources
 │
-├── FolderA/
-│   ├── ContextSummary.md  ← Semantic index of the folder for the AI
-│   └── (regular notes)
-│
-├── FolderB/
-│   ├── ContextSummary.md
-│   └── (regular notes)
-│
-└── ...
+└── memory/                     ← Layer 2: The Wiki (LLM-maintained)
+    ├── schema.md               ← Wiki operating manual
+    ├── index.md                ← Content catalog (every page, one-line summary)
+    ├── log.md                  ← Chronological operations log (parseable)
+    ├── glossary.md             ← Acronyms, internal terms, nicknames
+    ├── working-context.md      ← Mutable state: what matters right now
+    ├── triggers.md             ← Keyword → file loading rules
+    ├── modes.md                ← Interaction modes (research, writing, logistics...)
+    ├── context/                ← Stable structural context
+    │   ├── company.md
+    │   └── personality.md
+    ├── people/                 ← One .md per relevant person
+    ├── projects/               ← One .md per active project
+    ├── decisions/              ← Durable decisions and their rationale
+    ├── insights/               ← Filed-back conversation knowledge
+    └── pulse/                  ← Structured emotional check-in (optional)
 ```
+
+**Layer 1 — Sources**: Your curated collection of raw inputs. Articles, papers, podcast notes, book highlights. These are immutable — the AI reads from them but never modifies them. This is your source of truth.
+
+**Layer 2 — The Wiki**: A directory of AI-maintained Markdown files. Entity pages, concept pages, summaries, decisions, insights. The AI owns this layer: it creates pages, updates them when new sources arrive, maintains cross-references, and keeps everything consistent. You read it; the AI writes it.
+
+**Layer 3 — The Schema**: A document (`CLAUDE.md` / `COPILOT.md`) that tells the AI how the wiki is structured, what the conventions are, and what workflows to follow. This is the key configuration — it's what makes the AI a disciplined wiki maintainer rather than a generic chatbot.
 
 ---
 
 ## Memory hierarchy
 
-The system organizes context into three loading tiers — a pattern inspired by how operating systems manage memory between fast registers, RAM, and disk. The idea comes from [MemGPT](https://research.memgpt.ai) (Packer et al., 2023), which showed that LLMs benefit from the same kind of hierarchical memory management that CPUs use. We adapt the concept to plain files instead of code.
+The system organizes context into loading tiers — a pattern inspired by [MemGPT](https://research.memgpt.ai) (Packer et al., 2023), which showed that LLMs benefit from OS-style tiered memory management.
 
 | Tier | What it contains | When it loads | Analogy |
 |------|-----------------|---------------|---------|
-| **Tier 0 — System prompt** | Master document (`CLAUDE.md`) | Always, automatically | CPU registers |
+| **Tier 0 — System prompt** | `CLAUDE.md` | Always, automatically | CPU registers |
 | **Tier 1 — Working memory** | `glossary.md`, `company.md`, `personality.md`, `working-context.md` | Always, at session start | RAM |
-| **Tier 2 — Reference memory** | `people/`, `projects/`, `decisions/`, `recent-sessions.md` | On demand, when the topic requires it | Disk |
+| **Tier 1.5 — Reactive** | `triggers.md`, `modes.md` | Referenced implicitly, consulted on demand | L2 cache |
+| **Tier 2 — Reference memory** | `people/`, `projects/`, `decisions/`, `insights/`, `log.md` | On demand, when the topic requires it | Disk |
+| **Sources** | `sources/` | Only during Ingest operations | External storage |
 
-**Tier 0** is read-only during a session — it's your identity basics, interaction rules, and loading instructions. Think of it as a **router**, not a warehouse. The AI reads it once and doesn't modify it mid-session.
+**Tier 0** is read-only during a session — identity basics, interaction rules, loading instructions. Think of it as a **router**, not a warehouse.
 
-**Tier 1** is the active working set. These files are small, dense, and always relevant. The `working-context.md` file (described below) is the one piece of Tier 1 that the AI *writes to* at session end — a mutable snapshot of what matters right now.
+**Tier 1** is the active working set. Small, dense, always relevant. `working-context.md` is the one piece of Tier 1 that the AI *writes to* at session end.
 
-**Tier 2** is everything else. The AI doesn't load it unless the conversation requires it. `ContextSummary.md` files act as the index that tells the AI *which* Tier 2 files to pull in — like a page table that maps virtual addresses to physical storage.
+**Tier 2** is everything else. The AI doesn't load it unless the conversation requires it. `index.md` acts as the catalog that tells the AI *which* Tier 2 files to pull in.
 
-This hierarchy matters because context windows are finite. Loading everything wastes tokens on information that isn't relevant to the current session. Loading nothing forces the AI to guess. The tier model gives a middle path: always-on identity, always-on working state, and structured access to everything else.
+This hierarchy matters because context windows are finite. Loading everything wastes tokens. Loading nothing forces guessing. The tier model gives a middle path: always-on identity, always-on working state, and structured access to everything else.
 
 ---
 
-## Component 1: The master document (`CLAUDE.md`)
+## Layer 1: Sources
 
-This is the heart of the system. It loads automatically at the start of each Claude Code session (if placed in the working directory). For other AI tools, paste it at the beginning of the chat or attach it as context.
+The `sources/` directory holds raw inputs that the AI reads but never modifies. When you add a source here, the AI processes it through the **Ingest** operation — extracting information and integrating it into wiki pages.
 
-### What to include
+### Structure
 
-```markdown
-# Context for AI sessions
-
-## Who I am
-- Name, role, place of residence
-- Only the identity facts the AI genuinely needs in most sessions
-
-## Where my memory lives
-- Absolute vault path
-- Key entry points: `memory/ContextSummary.md`, `memory/glossary.md`, `TASKS.md`
-- Instruction to load detailed people/project context from `memory/`, not from this file
-
-## How to interact with me
-- Preferred tone (formal / peer / technical)
-- Primary language
-- Things I value: complexity, citations, connections across disciplines
-- Things to avoid: disclaimers, oversimplification, condescension
-
-## Operating rules
-- Security / privacy constraints
-- Tool preferences
-- Update protocol
-
-## Update protocol
-(instructions to the AI about what to update at the end of each session)
+```
+sources/
+├── README.md              ← What goes here, how ingest works
+├── articles/              ← Web clips, articles, PDFs converted to Markdown
+├── notes/                 ← Podcast notes, book highlights, meeting transcripts
+└── assets/                ← Images, screenshots referenced by sources
 ```
 
-### Golden rule of the master document
-
-**Use Tier 0 as a router, not a warehouse.** The AI reads it in full at the start. In practice, smaller is better: often **50–200 lines** is enough. If you find yourself pasting detailed biographies, project state, or long preference lists here, move them into `memory/` and load them on demand.
-
----
-
-## Component 2: The `memory/` folder
-
-Divide memory into these layers:
-
-### Memory classification and relevance
-
-Every file in `memory/` should have YAML frontmatter with these core fields:
+### Source frontmatter
 
 ```yaml
 ---
-type: fact | preference | rule | project | person | decision
-relevance: high | medium | low
-last_reviewed: 2026-03-15
+title: "Article or source title"
+date: 2026-04-05
+source_url: "https://..."
+source_type: article | podcast | book | video | conversation | other
+processed: false
+tags:
+  - topic/relevant-tag
 ---
 ```
 
-**Type** classifies what kind of memory it is:
+Set `processed: true` after the AI has ingested the source into the wiki.
 
-| Type | What it captures | Example |
-|------|-----------------|---------|
-| `fact` | Stable information about the world | Professional context, glossary |
-| `preference` | How you like things done | Communication style, tool choices |
-| `rule` | Instructions the AI must follow | Update protocol, security rules |
-| `project` | An active or past project | Code projects, creative work |
-| `person` | Someone relevant to your context | Family, collaborators, clients |
-| `decision` | Durable rationale for a meaningful change | System change, project direction |
+### Tips
 
-**Relevance** signals how important this file is for current sessions:
-
-| Level | Meaning | AI behavior |
-|-------|---------|-------------|
-| `high` | Essential for most sessions | Always load when relevant |
-| `medium` | Useful in specific contexts | Load when the topic comes up |
-| `low` | Historical or rarely needed | Candidate for archival |
-
-**Last reviewed** is a semantic freshness signal. It marks when a note was **actually validated or meaningfully updated**, not just when an audit script touched it. During periodic maintenance, ask the AI: *"Review all memory/ files and flag any where `last_reviewed` is older than 3 months."*
-
-This is the manual equivalent of importance scoring and memory decay in automated systems — without running any code. The AI reads the frontmatter, prioritizes `high` relevance files, and you periodically prune `low` relevance entries to keep context lean.
+- **Obsidian Web Clipper** converts web articles to Markdown — clip directly into `sources/articles/`.
+- **Download images locally:** Set Obsidian's attachment folder to `sources/assets/`.
+- Sources are excluded from memory loading (they're not wiki pages). The AI only reads them during Ingest.
+- You don't *need* sources to use the system. If all your information comes through conversations, light ingest works without any files in `sources/`.
 
 ---
 
-### `ContextSummary.md` inside `memory/` — Operational memory index
+## Layer 2: The Wiki (`memory/`)
 
-This file tells the AI how to navigate the memory layer efficiently:
+This is the heart of the system — the AI-maintained knowledge base. Every file here is a wiki page that the AI creates, updates, and cross-references.
 
-- What to load first (always-relevant files)
-- What to load only when a topic comes up
-- Where durable decisions live
-- What has changed structurally in the memory system
+### `schema.md` — Wiki operating manual
 
-Think of it as a router between the master document and the detailed memory files. Without it, the AI tends to over-read or guess. With it, context loading becomes intentional.
+The single source of truth for how the wiki operates: conventions, page formats, operation protocols, and maintenance rules. This is where you document your wiki's "rules of the game."
+
+Think of it as an `AGENTS.md` or `CONTRIBUTING.md` but for your memory system. It tells the AI:
+- How the three layers work
+- What the four operations are and how to execute them
+- Page format templates (frontmatter fields, section structure)
+- Proactive writing rules (when to update without asking)
+- Maintenance cadences
+
+You and the AI co-evolve this file over time as you figure out what works for your domain.
+
+### `index.md` — Content catalog
+
+A content-oriented catalog of everything in the wiki — each page listed with a link, a one-line summary, and its type. Organized by category (core context, entities, knowledge, operational).
+
+The AI reads this first to navigate. When answering a query, it scans the index to find relevant pages, then drills into them. This works surprisingly well at moderate scale (~100 pages) and avoids embedding-based RAG.
 
 ```markdown
-# ContextSummary — Memory
+# Index — memory wiki catalog
 
-## Always load
-- glossary.md — internal vocabulary
-- context/company.md — professional environment
-- context/personality.md — personality profile and interaction preferences
+## Tier 1 — always load
+| Page | Summary | Type |
+|------|---------|------|
+| glossary | Acronyms, nicknames, codenames | fact |
+| context/company | Role, tools, processes | fact |
+| context/personality | Personality profile, interaction implications | preference |
+| working-context | Current focus, open threads, recent decisions | fact |
 
-## Load on demand
-- people/ — when a person is mentioned by name or nickname
-- projects/ — when a project is mentioned by codename
-- decisions/ — when the question is about *why* something was changed
-
-## Recent structural changes
-- [date]: [what changed and why]
+## Tier 2 — load on demand
+| Page | Summary | Type |
+|------|---------|------|
+| people/marcus | Colleague, scientific illustration specialist | person |
+| projects/concordance | Pigment recipe mapping project | project |
+| insights/uv-thresholds | UV exposure limits need revision | insight |
+| ... | ... | ... |
 ```
 
----
+Update this file whenever pages are created, renamed, or retired.
 
-### `working-context.md` — Mutable session state
+### `log.md` — Operations log
 
-This is the most MemGPT-inspired addition to the system. Where `ContextSummary.md` is structural (it describes *what's in the folder*), `working-context.md` is temporal — it captures *what matters right now*.
-
-Think of it as a small whiteboard that the AI updates at the end of each session with the most important current facts. It's Tier 1: always loaded, always compact, always fresh.
+A structured, chronological record of what happened and when — ingests, sessions, lint passes, decisions. Each entry starts with a consistent prefix so the log is parseable with simple tools.
 
 ```markdown
----
-type: fact
-relevance: high
-last_reviewed: 2026-03-17
----
-# Working context
+# Log
 
-Last updated by AI after session on 2026-03-17.
+## [2026-04-05] ingest | Venetian pigment degradation study
+Source: sources/articles/venetian-pigment-study.md
+UV thresholds need revision. Created insight page. Updated Dr. Fischer profile.
 
-## Active focus
-- Wine Academy: finalizing Cloudflare architecture, Héctor's content pipelines replace Paperclip+NanoClaw
-- Herensuge: paused at chapter 10, picking up chapter 11 when bandwidth allows
+## [2026-04-03] session | Weekly project review
+Claude Code. Reviewed altarpiece timeline. Updated working-context.
 
-## Open threads
-- Austria interview: results expected June 2026
-- Gabriel: first therapy appointment Thursday 19/3
-
-## Recent decisions
-- DEC-007: Content pipelines replace Paperclip+NanoClaw for Wine Academy
-- DEC-006: Cloudflare-first architecture for Wine Academy
-
-## Stale / resolved
-- (items here get pruned on next review)
+## [2026-03-30] lint | Monthly audit
+14 files reviewed. 0 critical, 1 warning. Fixed outdated profile.
 ```
 
-**How it works in practice:**
+**Format:** `## [YYYY-MM-DD] operation | topic`
 
-1. The AI reads `working-context.md` at session start (Tier 1, always loaded)
-2. During the session, if something important changes — a decision is made, a project shifts, a thread resolves — the AI notes it
-3. At session end, the AI rewrites this file to reflect the updated state
-4. Old items move to "Stale / resolved" and get pruned next session
+**Operations:** `session`, `ingest`, `lint`, `decision`, `update`, `insight`
 
-**Key constraints:**
-- **Keep it under 40 lines.** If it grows beyond that, information should move to the proper file (project, person, decision) instead.
-- **Facts, not narrative.** This is a state snapshot, not a session diary.
-- **The AI writes it, you review it.** Glance at it occasionally to make sure the AI isn't drifting.
+**Parseable:** `grep "^## \[" memory/log.md | tail -10` gives the last 10 entries.
 
----
-
-### `recent-sessions.md` — Rolling session log
-
-This file gives the AI temporal continuity — a compressed record of what happened in recent sessions. Without it, every session starts from a structural snapshot but has no sense of *sequence* or *momentum*.
-
-Inspired by MemGPT's recursive summarization of evicted conversation history. Instead of storing full transcripts, you store a one-liner per session that captures the key outcome.
-
-```markdown
----
-type: fact
-relevance: medium
-last_reviewed: 2026-03-17
----
-# Recent sessions
-
-Rolling log of the last ~10 sessions. Oldest entries get pruned.
-
-| Date | Tool | Topic | Key outcome |
-|------|------|-------|-------------|
-| 2026-03-17 | Copilot | Memory system | Added MemGPT-inspired hierarchy, working-context, session log |
-| 2026-03-16 | Claude Code | Memory system | Added decision layer, maintenance protocol, ResumenContexto |
-| 2026-03-15 | Claude Code | Wine Academy | Defined Cloudflare architecture, evaluated content pipelines |
-| 2026-03-14 | Claude Code | Blog | Published post on impermanence and digital memory |
-```
-
-**Rules:**
-- **Cap at ~10 entries.** When a new session is logged, the oldest entry drops off. This is not an archive — it's a recency buffer.
-- **One line per session.** Resist the urge to write paragraphs. The AI can always load the relevant project or decision file for details.
-- **The AI appends, you prune.** At session end, the AI adds a row. During maintenance, you can remove entries that are no longer useful.
-
-**When to load it:** Tier 2 — load it when the AI needs to understand what happened recently (e.g., "continue where we left off", "what did we decide last time?", "catch me up"). Don't load it for sessions where temporal context doesn't matter.
-
----
+The log is append-only. Prune oldest entries when the file exceeds ~50 entries.
 
 ### `glossary.md` — Internal vocabulary
 
@@ -323,15 +254,44 @@ Rolling log of the last ~10 sessions. Oldest entries get pruned.
 | [nick]   | [real name, relationship] |
 ```
 
-**Why it works:** When you later say "what's the status of [nickname] and [project]", the AI already knows what you mean without you having to explain.
+When you say "what's the status of [nickname] and [project]", the AI already knows what you mean.
 
----
+### `working-context.md` — Mutable session state
 
-### `people/[name].md` — People profiles
+The most MemGPT-inspired component. Where `index.md` is structural (what's in the wiki), `working-context.md` is temporal — it captures *what matters right now*.
 
-One file per relevant person (partner, children, collaborators, frequent clients, etc.).
+Think of it as a whiteboard the AI updates at session end. It's Tier 1: always loaded, always compact, always fresh.
 
 ```markdown
+# Working context
+
+Last updated after session on 2026-04-05.
+
+## Active focus
+- Project X: finalizing architecture, pipeline integration
+- Novel: paused at chapter 10
+
+## Open threads
+- Job interview: results expected June 2026
+- Family: trip planned for mid-April
+
+## Recent decisions
+- DEC-017: Memory System v2.0
+
+## Stale / resolved
+- (items here get pruned on next review)
+```
+
+**Key constraints:**
+- **Keep it under 40 lines.** Longer content should move to the proper file.
+- **Facts, not narrative.** State snapshot, not session diary.
+- **The AI writes it, you review it.** Glance occasionally to catch drift.
+
+### `people/` — People profiles
+
+One file per relevant person. Include only what helps the AI contextualize mentions.
+
+```yaml
 ---
 type: person
 relevance: high
@@ -341,26 +301,24 @@ last_reviewed: 2026-03-15
 
 **Also known as:** [nickname]
 **Relationship:** [relationship to you]
-**Context:** [what they do, where they live, etc.]
+**Context:** [what they do, where they live]
 
 ## Details relevant for the AI
-- Shared interests
-- Personality / communication style
-- Important notes for interaction
+- Shared interests, communication style
 
 ## Shared projects or topics
 - [list of joint projects]
 ```
 
-**What NOT to include:** Sensitive data, passwords, legal documents. Only what helps the AI contextualize mentions of that person.
+**What NOT to include:** Passwords, sensitive data, legal documents. Only what helps the AI.
 
-**Optional but powerful:** If you've done personality tests (MBTI, Big Five, HEXACO), adding a profile summary helps the AI understand relational dynamics significantly better.
+**Optional but powerful:** If you've done personality tests (HEXACO, Big Five), adding a profile summary helps the AI understand relational dynamics significantly better.
 
----
+### `projects/` — Active projects
 
-### `projects/[project].md` — Active projects
+One file per active project:
 
-```markdown
+```yaml
 ---
 type: project
 relevance: high
@@ -368,9 +326,9 @@ last_reviewed: 2026-03-15
 ---
 # Project Name
 
-**Codename:** [short name for use in conversations]
+**Codename:** [short name]
 **Status:** Active / On hold / Completed
-**Repo / Location:** [where the code or files live]
+**Repo / Location:** [where the files live]
 **Stack:** [technologies, tools]
 
 ## What it is
@@ -380,23 +338,14 @@ last_reviewed: 2026-03-15
 [progress, last milestone, next steps]
 
 ## Notes for the AI
-- Project conventions
-- Relevant architecture decisions
-- What it should not touch / change
+- Conventions, architecture decisions, what not to touch
 ```
 
----
+### `decisions/` — Decision memory
 
-### `decisions/[decision].md` — Decision memory
-
-Use this folder for decisions whose rationale should survive the session where they were made. Not every choice needs a record — only the ones where future-you (or the AI) would ask *"why did we do it this way?"*
+For decisions whose rationale should survive the session where they were made. Not every choice — only the ones where future-you would ask *"why did we do it this way?"*
 
 ```markdown
----
-type: decision
-relevance: high
-last_reviewed: 2026-03-15
----
 # DEC-001 - Decision title
 
 **Status:** Accepted
@@ -410,298 +359,169 @@ last_reviewed: 2026-03-15
 [What was chosen]
 
 ## Alternatives considered
-- [Option A — why it was rejected]
-- [Option B — why it was rejected]
+- [Option A — why rejected]
 
 ## Consequences
-- [Positive outcomes]
-- [Tradeoffs accepted]
+- [Outcomes and tradeoffs]
 ```
 
-**When to create one:** Only when future sessions would lose important reasoning without it. This is not a diary — it's for durable rationale. Good examples: changing your memory system structure, choosing a tech stack for a project, deciding to drop or restructure a creative project.
+Include a `ContextSummary.md` inside `decisions/` listing all decisions by date and scope.
 
-**Recommended companion:** A `ContextSummary.md` inside `decisions/` that lists all decisions by date and scope, so the AI can find them without reading every file.
+### `insights/` — Filed-back knowledge
+
+**New in v2.0.** This is where valuable conversation outputs go to live permanently. A comparison you asked for, an analysis, a connection you discovered — these shouldn't disappear into chat history.
+
+```yaml
+---
+type: insight
+source: session | ingest | analysis
+source_date: 2026-04-05
+relevance: high
+last_reviewed: 2026-04-05
+---
+# Insight title
+
+[The insight itself, with wikilinks to related pages]
+```
+
+Insights are created through the **file-back** mechanism: at session end, the AI asks "Any insight from this session worth filing?" Good answers become persistent wiki pages.
+
+### `context/` — Stable structural context
+
+- `company.md` — Professional environment: tools, role, processes, recurring workflows.
+- `personality.md` — Personality profile (HEXACO recommended). Applied interpretations, not just scores. Implications for AI interaction.
+
+These rarely change. They calibrate the AI's tone, level, and collaboration style.
+
+### Memory classification and relevance
+
+Every file in `memory/` should have YAML frontmatter:
+
+```yaml
+---
+type: fact | preference | rule | project | person | decision | insight
+relevance: high | medium | low
+last_reviewed: 2026-03-15
+---
+```
+
+| Type | What it captures |
+|------|-----------------|
+| `fact` | Stable information |
+| `preference` | How you like things done |
+| `rule` | Instructions the AI must follow |
+| `project` | An active or past project |
+| `person` | Someone relevant to your context |
+| `decision` | Durable rationale for a meaningful change |
+| `insight` | Valuable synthesis from a conversation or analysis |
+
+**`last_reviewed`** is a semantic freshness signal. It marks when a note was **actually validated or meaningfully updated**, not when an audit script touched it. This is the manual equivalent of importance scoring and memory decay — without running code.
 
 ---
 
-### `context/company.md` — Professional environment
+## Layer 3: The Schema (`CLAUDE.md`)
+
+This loads automatically at session start (Claude Code reads it from the working directory; for other tools, attach it). It's the heart of Tier 0.
+
+### What to include
 
 ```markdown
-# Professional context
+# Context for AI sessions
 
-## Tools and systems
-| Tool   | Use          | Notes  |
-|--------|-------------|--------|
-| [tool] | [what for]  | [notes] |
+## Who I am
+- Name, role, location
+- Only identity facts needed in most sessions
 
-## Current role
-- Company, position, specialization
-- Type of clients / projects
+## Where my memory lives
+- Vault path
+- Key entry points: memory/index.md, memory/glossary.md, TASKS.md
+- Instruction to load from memory/, not duplicate here
 
-## Recurring processes
-| Process  | What it means in practice |
-|----------|--------------------------|
-| [name]   | [description]            |
-```
+## How to interact with me
+- Preferred tone, language, values
+- Things to avoid
 
----
+## Operating rules
+- Security, tool preferences
+- Four operations: ingest, query+file-back, lint, log
+- Reference memory/schema.md for detailed conventions
 
-### `context/personality.md` — Personality profile (optional)
-
-This is the most powerful and most personal file. If you've done a personality test (HEXACO is recommended for its scientific validity), document the results with applied interpretations:
-
-```markdown
-# Personality profile
-
-**Test:** [test name]
-**Date:** [when you took it]
-
-## Main traits
-
-### [Trait 1] — [score / level]
-[interpretation in your specific context]
-
-### [Trait 2] — [score / level]
-[interpretation]
-
-...
-
-## Implications for AI interaction
-- [list of how the AI should adapt its behavior]
-```
-
-**Why this is useful:** The AI can calibrate how much validation it offers, how it frames criticism, whether to ask questions or give direct answers, and whether to assume you need emotional support or not.
-
----
-
-## Component 3: `ContextSummary.md` in each folder
-
-Each vault folder has a file that acts as a **semantic index** for the AI.
-
-```markdown
-# Context Summary — [Folder Name]
-
-This folder contains [brief description]. [How it fits in your workflow].
-
-## What's here
-
-### [File or subfolder 1]
-[Description of what it contains and what it's for]
-
-### [File or subfolder 2]
-[Description]
-
-...
-
-## Current status
-[Progress, last relevant change, notes for the AI]
-```
-
-**When to use it:** When you ask the AI to work on a specific folder ("review my research notes on X"), point it to the `ContextSummary.md` first. It doesn't need to read every file.
-
----
-
-## Component 4: `TASKS.md`
-
-A task list structured by time horizon. Recommended format:
-
-```markdown
-## Active
-- [ ] **[Name]** — brief description
-
-## Recurring
-- [ ] **[Name]** — description — due [date] 🔁 [frequency]
-
-## Upcoming
-- [ ] **[Name]** — due [date]
-
-## Someday
-- [ ] [idea or pending project with no date]
-```
-
-**AI use:** "Review my TASKS.md and tell me what I have due this week" works perfectly when you have explicit dates.
-
----
-
-## Component 5: Wikilinks and the knowledge graph
-
-Obsidian's `[[wikilinks]]` are not just a navigation convenience — they are the connective tissue that turns a collection of files into a **navigable knowledge graph**. Both you and the AI benefit from explicit links between notes.
-
-### The `## Links relacionados` pattern
-
-At the end of each content note, add a section with links to related notes. Each link should include a **relationship verb** that tells the AI (and you) *how* the notes connect, not just *that* they connect:
-
-```markdown
-## Links relacionados
-
-- [[Note A]] — extends: develops the same argument further
-- [[Note B]] — contradicts: presents an opposing view
-- [[Note C]] — supports: provides evidence for the same thesis
-- [[Note D]] — source: research that feeds this note
-- [[Note E]] — applies: where this concept is used in practice
-```
-
-### Relationship types
-
-Use these verbs to classify links. You don't need to be rigid — a brief annotation is always better than none — but consistent verbs make the graph meaningful:
-
-| Verb | Meaning | Example |
-|------|---------|---------|
-| `extends` | Develops the same idea further | A philosophy essay linking to a deeper treatment |
-| `supports` | Provides evidence or backing | Research linking to the thesis it supports |
-| `contradicts` | Presents an opposing or tension view | Two notes with incompatible conclusions |
-| `source` | Raw material that feeds this note | Research → creative writing chapter |
-| `applies` | Where a concept is used in practice | A theory → a character who embodies it |
-| `part_of` | Component of a larger whole | A chapter → the novel it belongs to |
-| `related` | General thematic connection | Default when the relationship is loose |
-
-The brief annotation after each link is important. It tells both you and the AI *why* the connection exists, not just *that* it exists. A link without context is noise; a link with a one-line reason is signal.
-
-### What to link
-
-- **Thematic connections** — notes that explore the same idea from different angles
-- **Cross-folder bridges** — these are the most valuable: a research note linking to a creative writing chapter, a philosophy essay linking to a character profile
-- **Source → application** — research that feeds into a project, a concept that informs a decision
-
-### Let the AI build the graph for you
-
-One of the most powerful uses of this system is asking the AI to **audit your vault for missing connections**. A prompt like:
-
-> "Review all my vault files and find relationships between documents that exist but aren't linked. Create the wikilinks so I can see them in Obsidian's graph view."
-
-The AI can read every file, identify thematic overlaps you missed, and add hundreds of links in one session. This is particularly effective for vaults that have grown organically over time — the connections are there, they just haven't been made explicit.
-
-### Graph view as a thinking tool
-
-Once the links exist, Obsidian's graph view becomes a map of your intellectual landscape. Clusters reveal where your thinking is dense. Isolated nodes reveal notes that should be connected but aren't. Bridge nodes — notes that connect otherwise separate clusters — reveal your most integrative ideas.
-
----
-
-## How it integrates with AI tools
-
-### Claude Code (CLI)
-Place `CLAUDE.md` in the project's working directory. Claude loads it automatically at the start of every session. For coding projects, this is the most seamless integration.
-
-### Working from a different project directory
-
-Claude Code has a limitation: it loads `CLAUDE.md` from the current working directory. If you're working on a coding project in `~/projects/my-app/`, it won't automatically read your vault's `CLAUDE.md`.
-
-There are three ways to solve this, from simplest to most powerful:
-
-**Option 1: Global instructions (no code, works today)**
-
-Create `~/.claude/CLAUDE.md` — a lightweight global instructions file that Claude Code loads in *every* session regardless of working directory. Keep it short (30–50 lines) with:
-
-- Your identity basics (name, role, location)
-- The absolute path to your vault
-- An instruction to read vault files when context is needed
-- Your interaction preferences
-
-```markdown
-# Global context
-
-## Identity
-- [Name], [role], [location]
-
-## Obsidian vault (memory system)
-My knowledge base and AI memory lives at:
-`~/path/to/your/obsidian/vault/`
-
-When I mention "the vault", "my notes", or reference people/projects by short names,
-read the relevant files from that path. Key entry points:
-- CLAUDE.md — Tier 0 context and loading rules
-- memory/ContextSummary.md — what to load first
-- memory/glossary.md — internal vocabulary
-- TASKS.md — current tasks
-
-## Interaction preferences
-- [Your preferences here]
-```
-
-The vault's full `CLAUDE.md` stays in the vault for sessions where the vault *is* the working directory. The global file is a pointer that says "my memory lives over there — go read it when you need it."
-
-**Option 2: Symlinks (simple, slightly fragile)**
-
-Create a symlink from each project to your vault's `CLAUDE.md`:
-
-```bash
-ln -s ~/path/to/vault/CLAUDE.md ~/projects/my-app/CLAUDE.md
-```
-
-The downside: symlinks can break if paths change, and you'll have a `CLAUDE.md` in every project directory.
-
-**Option 3: Cowork plugin (best for Claude Desktop)**
-
-Package the memory system as a Cowork plugin with slash commands (`/memory-load`, `/memory-update`, `/memory-audit`, `/memory-decide`) and an auto-triggering skill. Once installed, the commands are available in every Cowork session regardless of context. See the full step-by-step in **[plugin-guide.md](plugin-guide.md)**.
-
-**Option 4: MCP server (most powerful, requires code)**
-
-Package the memory system as a local MCP server that exposes tools like `memory_read`, `memory_search`, `memory_update`. Any AI tool that supports MCP (Claude Code, Cursor, etc.) could then access your vault's memory from any working directory, automatically. This is essentially what projects like [Chetna](https://github.com/vineetkishore01/Chetna) do with a database backend — the same idea could be built on top of your Markdown files.
-
-**Option 5: Standalone automation agent (runs outside conversations)**
-
-Build a script that maintains your memory files autonomously — session-end updates, scheduled audits, consistency checks — without needing an open chat session. Works with the Anthropic API (direct tool use) or the GitHub Copilot SDK (pre-built agentic loop). See the full guide in **[automation-guide.md](automation-guide.md)**.
-
-**Recommendation:** Start with Option 1. It takes two minutes, works immediately, and covers 90% of use cases. If you use Claude Desktop (Cowork) heavily, Option 3 gives you the best experience there. If you want automated maintenance that runs on a schedule, Option 5 is the way to go. Move to Option 4 only if you need programmatic memory access from custom tools.
-
-### VS Code + GitHub Copilot
-Use `COPILOT.md` in the root directory with the **same Tier 0 semantics** as `CLAUDE.md`. Keep one as the source of truth or sync them deliberately — don't let them drift into two different master documents.
-
-### Claude.ai / ChatGPT (web)
-Create a **custom system instruction** (in Settings → Custom Instructions or equivalent) using a condensed version of the master document. For intensive sessions, paste the full `CLAUDE.md` at the start of the chat.
-
-### Any AI with file access
-Attach `CLAUDE.md` + the `ContextSummary.md` of the relevant folder + the corresponding project file. If the question is about *why* something was changed, attach the relevant file from `memory/decisions/` too.
-
----
-
-## Update protocol (instructions for the AI)
-
-Include this at the end of your `CLAUDE.md`:
-
-```markdown
 ## Update protocol
-
-Mandatory rule: at the end of each relevant session, update:
-
-1. **CLAUDE.md / COPILOT.md** — only if Tier 0 instructions or the high-level profile summary changed
-2. **ContextSummary.md** of the affected folder — reflect changes made
-3. **memory/ContextSummary.md** — if the structure or loading logic of memory changed
-4. **memory/** — update people, project, or decision files if applicable
-5. **`last_reviewed`** — update it only on files whose content you semantically validated or changed
-6. **TASKS.md** — mark completed tasks or add new ones
-7. **memory/working-context.md** — rewrite to reflect current state
-8. **memory/recent-sessions.md** — append a one-line entry for this session
+(instructions for session end — see Update Protocol section)
 ```
 
-### Proactive memory triggers
+### Golden rule
 
-Don't wait for session end. MemGPT showed that the most effective memory systems update *during* the conversation, not just at the end. Include these trigger rules in your master document:
+**Use Tier 0 as a router, not a warehouse.** 50–200 lines is enough. If you're pasting detailed bios or project state here, move them to `memory/` and load on demand.
 
-```markdown
-## Proactive memory triggers
+---
 
-During the session, if any of these happen, propose the update immediately:
+## Four operations
 
-- **New fact about a person** → Propose adding it to their people/ file
-- **Decision made with rationale** → Propose a new DEC- entry in decisions/
-- **Project status changes** → Propose updating the project file
-- **New term or codename introduced** → Propose adding it to glossary.md
-- **Task completed or created** → Update TASKS.md right away, don't wait
+### Ingest
 
-"Propose" means: tell me what you'd update and where, then do it if I confirm.
-For TASKS.md updates, just do it — no confirmation needed.
-```
+Process new sources into wiki pages. A single source can touch 10+ pages.
 
-**Why proactive beats reactive:** At session end, the AI has to reconstruct what happened from its conversation history. Mid-session, the context is fresh and the update is precise. This is the plain-text equivalent of MemGPT's self-directed working context edits — the AI manages its own memory as the conversation evolves.
+**Heavy ingest** (file-based):
+1. Drop a file in `sources/` (or point to an existing one)
+2. AI reads the source thoroughly
+3. AI discusses key takeaways with you
+4. AI creates/updates wiki pages: people, projects, insights, glossary
+5. AI updates `index.md` with new/modified pages
+6. AI appends entry to `log.md`: `## [date] ingest | Source title`
+7. AI marks source as `processed: true`
 
-This turns the AI into a co-maintainer of the system. At the end of any working session you can ask: "Update the relevant memory files with what we did today."
+**Light ingest** (conversation-based):
+1. Paste text or share information in conversation
+2. AI identifies extractable entities, concepts, facts
+3. AI proposes which wiki pages to create/update
+4. AI updates index.md and log.md
+5. No source file created — the conversation is the source
+
+Personally, I prefer to ingest sources one at a time and stay involved — I read the summaries, check the updates, and guide the AI on what to emphasize. But you could also batch-ingest many sources at once with less supervision. Document the workflow that fits your style in your `schema.md`.
+
+### Query + File-back
+
+Standard query flow:
+1. AI reads `index.md` to find relevant pages
+2. AI loads and reads relevant pages (following progressive retrieval)
+3. AI synthesizes an answer with citations to wiki pages
+
+**File-back** (new in v2.0): good answers become wiki pages.
+
+- **At session end:** The AI asks: "Any insight from this session worth filing?"
+- **Mid-conversation:** When the AI detects a valuable synthesis: "This analysis seems worth preserving. File it as an insight?"
+- **During ingest:** When processing a source reveals a connection worth documenting independently.
+
+Filed insights go to `insights/` with wikilinks to related pages. This is how your explorations compound in the knowledge base just like ingested sources do.
+
+### Lint
+
+Periodically health-check the wiki. Beyond checking for stale information:
+
+- **Contradictions** between pages (dates, facts, states that conflict)
+- **Stale claims** superseded by newer sources or conversations
+- **Orphan pages** with no inbound wikilinks
+- **Missing concept pages** — topics frequently mentioned but lacking their own page
+- **Missing cross-references** between obviously related pages
+- **Investigation gaps** — areas where a web search or new source could fill a hole
+- **Source coverage** — files in `sources/` still marked `processed: false`
+
+The AI is good at suggesting new questions to investigate and new sources to look for. This keeps the wiki healthy as it grows.
+
+### Log
+
+Append structured entries to `log.md` for every operation. This gives you a timeline of the wiki's evolution and helps the AI understand what's been done recently.
+
+See the [`log.md` section](#logmd--operations-log) above for format details.
+
+---
+
+## Reactive loading: triggers and modes
 
 ### Formalized triggers: `triggers.md`
 
-Once your proactive triggers grow beyond a handful of rules, or once you have enough people, projects, and contexts that the AI struggles to know *which* file to load *when*, consider extracting the trigger logic into its own file: `memory/triggers.md`.
-
-This idea is inspired by the *lorebook* (character book) concept from [Open-Her OS](https://github.com/kitfoxs/open-her-os), which uses keyword-activated entries to modulate AI behavior contextually. Adapted to a Markdown memory system, the lorebook becomes a trigger table:
+Once your context grows beyond a handful of files, extract the loading logic into its own file. This idea is inspired by the *lorebook* concept from [Open-Her OS](https://github.com/kitfoxs/open-her-os) — keyword-activated entries that modulate AI behavior.
 
 ```markdown
 # Triggers
@@ -710,35 +530,31 @@ This idea is inspired by the *lorebook* (character book) concept from [Open-Her 
 
 | Keywords / signal | Files to load | Suggested mode |
 |---|---|---|
-| Marcus, scientific illustration | `people/marcus-hoekstra.md` | — |
-| Concordance, pigment, recipe | `projects/concordance.md` | research |
+| Marcus, illustration | `people/marcus.md` | — |
+| Concordance, pigment | `projects/concordance.md` | research |
 | blog, Strata, post | — | writing |
-| what did we decide, why this way | `decisions/` | — |
-| continue, last session, catch up | `recent-sessions.md` | — |
+| /ingest, process this | `sources/README.md`, `schema.md` | ingest |
+| insights, synthesis | `insights/README.md` | — |
 
 ## Writing triggers
 
 | Signal detected | Action | Confirmation |
 |---|---|---|
-| New fact about a person | Propose adding to `people/[name].md` | Ask first |
-| Decision made with rationale | Propose new DEC- entry | Ask first |
+| New fact about a person | Propose adding to `people/` | Ask first |
+| Decision with rationale | Propose new DEC- entry | Ask first |
 | Task completed or created | Update TASKS.md directly | No confirmation |
+| Valuable synthesis detected | Propose insight page in `insights/` | Ask first |
+| Session ending | Ask "Any insight worth filing?" | Ask first |
+| Operation completed | Append to `log.md` | No confirmation |
 ```
 
-**Benefits over prose triggers:**
+**Benefits:** Auditable (scan the table to see if someone is missing), single source of truth, extensible (add a row, not edit three files), mode-aware.
 
-- **Auditable.** You can scan the table and immediately see if a person or project is missing.
-- **Single source of truth.** Instead of triggers scattered across `CLAUDE.md`, `ContextSummary.md`, and the glossary, one file has all the rules.
-- **Extensible.** Adding a new person or project means adding one row, not editing three files.
-- **Mode-aware.** The "Suggested mode" column connects triggers to interaction modes (see below).
-
-Keep triggers as Tier 1.5: the AI knows the file exists (referenced from the master document) and consults it on demand, but doesn't need to read it in full at session start.
+Keep triggers as Tier 1.5: the AI knows the file exists and consults it on demand.
 
 ### Interaction modes: `modes.md`
 
-AI assistants implicitly adapt their tone based on context — but without explicit guidance, they get it wrong. They respond efficiently when you're philosophizing, or get reflective when you need a checklist. Interaction modes make the calibration explicit.
-
-This is inspired by the *companion modes* from [Open-Her OS](https://github.com/kitfoxs/open-her-os) (default, comfort, playful, deep talk), adapted to the practical contexts of a knowledge worker's vault.
+Without explicit guidance, AI adapts tone poorly. Modes make calibration explicit. Inspired by *companion modes* from [Open-Her OS](https://github.com/kitfoxs/open-her-os).
 
 ```markdown
 # Interaction modes
@@ -753,10 +569,15 @@ This is inspired by the *companion modes* from [Open-Her OS](https://github.com/
 - **Tone:** Clear, engaging, collaborative
 - **Behavior:** Suggest structure, the author decides
 
+## ingest
+- **When:** /ingest, processing sources, integrating new material
+- **Tone:** Analytical, methodical, collaborative
+- **Behavior:** Read source fully, identify extractables, propose updates, update index+log
+
 ## logistics
-- **When:** Tasks, travel, appointments, purchases
-- **Tone:** Direct, efficient, no digressions
-- **Behavior:** Checklists, confirm dates/times, action items
+- **When:** Tasks, travel, appointments
+- **Tone:** Direct, efficient
+- **Behavior:** Checklists, confirm dates/times
 
 ## default
 - **When:** Everything else
@@ -764,181 +585,244 @@ This is inspired by the *companion modes* from [Open-Her OS](https://github.com/
 - **Behavior:** Detect context; if another mode fits, transition smoothly
 ```
 
-**How modes connect to triggers:**
+Modes connect to triggers via the "Suggested mode" column. Can also be activated manually: `/mode research`.
 
-The trigger table's "Suggested mode" column creates a direct link: when a keyword activates a trigger, the AI loads the specified files *and* shifts to the suggested interaction mode. This means:
-
-1. User mentions "Concordance" → trigger fires → load `projects/concordance.md` → activate `research` mode
-2. User says "write a blog post" → trigger fires → activate `writing` mode
-3. User asks about travel plans → trigger fires → load `viajes.md` → activate `logistics` mode
-
-Modes can also be activated manually: `/mode research`, `/mode writing`, etc. This is useful when the context is ambiguous or when you want to override the automatic detection.
-
-**Design principles for modes:**
-
-- Keep them few (3–6). More than that and the AI spends more time mode-switching than being useful.
-- Each mode should have a clear tone shift. If two modes sound the same, merge them.
-- Modes are advisory, not rigid. The AI can and should blend them when a conversation spans multiple contexts.
-- Include a `default` mode that covers everything else and handles mode detection.
-
-### Periodic maintenance: let the AI audit the vault
-
-Beyond session-by-session updates, schedule occasional full-vault reviews. Ask the AI to:
-
-- **Find missing wikilinks** — connections between notes that should exist but don't
-- **Update `ContextSummary.md` files** — especially after adding new notes to a folder
-- **Review decision coverage** — ensure important workflow or structural changes are captured in `memory/decisions/`
-- **Flag stale information** — projects marked "active" that haven't been touched in months
-- **Identify orphan notes** — files with no incoming or outgoing links
-- **Review memory relevance** — check `last_reviewed` dates in `memory/` frontmatter, treat them as semantic freshness signals (not audit timestamps), downgrade `relevance` for entries that haven't been relevant in months, and archive or remove `low` relevance files that no longer serve current context
-- **Strengthen link types** — upgrade vague `related` links to more specific verbs (`extends`, `supports`, `contradicts`, etc.) as the AI learns more about your vault
-
-This kind of structural maintenance is tedious for humans but trivial for an AI with file access. A single session can add hundreds of links and bring every summary file up to date.
-
-### Turn maintenance into a real routine
-
-Don't treat maintenance as an occasional vague intention. Give it explicit cadence:
-
-- **After an important session** — run a micro-review if the session changed structure, conventions, or project direction
-- **Monthly** — do a light audit of `memory/`
-- **Quarterly** — do a structural review of the whole context system
-
-| Cadence | Scope | Typical actions |
-|---------|-------|-----------------|
-| Post-session | Affected files only | Update notes, adjust `last_reviewed` on files actually reviewed, update `memory/ContextSummary.md`, record a decision if rationale should persist |
-| Monthly | `memory/` | Review stale notes, downgrade `relevance`, merge redundancies, add missing links |
-| Quarterly | Whole system | Archive low-value memory, review all summaries, check master doc balance, review decision coverage |
-
-**Tip:** Keep a dedicated checklist note inside `memory/` so the AI can follow the same review pattern every time you ask for maintenance.
-
-**Tip:** If you use Obsidian 1.12+, the CLI can automate many audit tasks — orphan detection, broken links, property sweeps — in seconds from the terminal. See **[obsidian-cli.md](obsidian-cli.md)** for ready-to-use scripts.
+**Design principles:** Keep them few (3–6). Each should have a clear tone shift. Modes are advisory, not rigid.
 
 ---
 
-## Typical workflow
+## Supporting components
 
-**At the start of a session:**
-1. The AI loads `CLAUDE.md` automatically (or you attach it)
-2. If the work is on a specific folder, point to its `ContextSummary.md`
-3. If the work involves specific people, projects, or prior decisions, point to the relevant files in `memory/`
+### `TASKS.md`
 
-**During the session:**
-- The AI operates with full context
-- You can refer to projects, people, and terms by their short names
+A task list structured by time horizon:
 
-**At the end of the session:**
-- Ask the AI to update the relevant files
-- Or do it manually if you prefer full control
+```markdown
+## This week
+- [ ] **Task name** — description, due date
+
+## Upcoming
+- [ ] **Task name** — due date
+
+## Someday
+- [ ] Idea or project with no date
+
+## Completed
+- [x] **Done task** — completion date
+```
+
+Move completed tasks to the bottom — don't leave them inline.
+
+### `ContextSummary.md` per folder
+
+Each vault folder (outside `memory/`) gets a semantic index:
+
+```markdown
+# Context Summary — [Folder Name]
+
+This folder contains [description]. [How it fits your workflow].
+
+## What's here
+### [File 1]
+[Description]
+```
+
+When you ask the AI to work on a specific folder, point to its ContextSummary first.
+
+### Wikilinks and the knowledge graph
+
+`[[wikilinks]]` are the connective tissue that turns files into a navigable graph. At the end of each page, add links with relationship verbs:
+
+```markdown
+## Links
+
+- [[Note A]] — extends: develops the same argument
+- [[Note B]] — contradicts: opposing view
+- [[Note C]] — supports: evidence for same thesis
+```
+
+| Verb | Meaning |
+|------|---------|
+| `extends` | Develops the same idea further |
+| `supports` | Provides evidence |
+| `contradicts` | Opposing view (flag for resolution) |
+| `source` | Raw material |
+| `applies` | Where a concept is used in practice |
+| `supersedes` | Replaces older information |
+
+**Let the AI build the graph:** Ask it to audit your vault for missing connections. A single session can add hundreds of links.
+
+---
+
+## How it integrates with AI tools
+
+### Claude Code (CLI)
+Place `CLAUDE.md` in the working directory. Claude loads it automatically. For cross-directory access, use `~/.claude/CLAUDE.md` as a lightweight global pointer.
+
+### Working from a different project directory
+
+**Option 1: Global instructions** — `~/.claude/CLAUDE.md` with your identity and a pointer to the vault path. Takes two minutes, covers 90% of cases.
+
+**Option 2: Cowork plugin** — Package as a plugin with slash commands (`/memory-load`, `/memory-update`, `/memory-audit`). See [plugin-guide.md](plugin-guide.md).
+
+**Option 3: Standalone agent** — Automated maintenance on a schedule using the Anthropic API or GitHub Copilot SDK. See [automation-guide.md](automation-guide.md).
+
+**Option 4: MCP server** — Expose `memory_read`, `memory_search`, `memory_update` as tools. Most powerful, requires code.
+
+### VS Code + GitHub Copilot
+`COPILOT.md` in the root directory with the same semantics as `CLAUDE.md`.
+
+### Claude.ai / ChatGPT (web)
+Paste or attach `CLAUDE.md` at session start. For intensive sessions, include relevant memory files.
+
+---
+
+## Update protocol
+
+Include this in your `CLAUDE.md`:
+
+```markdown
+## Update protocol
+
+At the end of each relevant session:
+
+1. Ask: "Any insight from this session worth filing in insights/?"
+2. Update working-context.md to reflect current state
+3. Append to log.md: ## [date] session | topic
+4. Update index.md if new pages were created
+5. Update affected ContextSummary.md files
+6. Update memory/ files (people, projects, glossary, decisions) if applicable
+7. Update TASKS.md — mark completed, add new
+8. Update CLAUDE.md/COPILOT.md — only if Tier 0 instructions changed
+```
+
+### Proactive triggers during the session
+
+Don't wait for session end. MemGPT showed that the most effective memory systems update *during* the conversation:
+
+- **New fact about a person** → Propose adding to `people/`
+- **Decision with rationale** → Propose new DEC- entry
+- **Project status change** → Propose updating project file
+- **New term or codename** → Propose adding to glossary
+- **Task completed or created** → Update TASKS.md immediately (no confirmation)
+- **Valuable synthesis** → Propose filing as insight
+
+"Propose" means: say what you'd update and where, then do it if confirmed. For TASKS.md and log.md, act without confirmation.
 
 ---
 
 ## Context pressure and progressive loading
 
-Context windows are finite. Even the largest models have limits, and filling a window with context leaves less room for the actual work. These two protocols — adapted from MemGPT's memory pressure warnings and paginated retrieval — help the AI manage context efficiently without your intervention.
+### Memory pressure: when to stop
 
-### Memory pressure: when to stop loading
-
-Include this instruction in your master document or ContextSummary:
-
-```markdown
-## Memory pressure rule
-
-If you have loaded more than 5 files from memory/ in this session,
-stop loading more. Instead:
-1. Summarize what you've learned so far from the loaded files.
-2. Ask me which thread to go deeper on.
-3. Only then load additional files for that specific thread.
+```
+If you have loaded more than 5 files from memory/ in this session:
+1. Stop loading more.
+2. Summarize what you've learned so far.
+3. Ask which thread to deepen.
+4. Only then load additional files for that thread.
 
 Never load all of people/, projects/, and decisions/ in the same session
 unless explicitly asked.
 ```
 
-**Why this matters:** Without this rule, an eager AI will read every file it finds referenced in a ContextSummary, quickly consuming the context window with information that may not be relevant. The pressure rule forces prioritization.
-
 ### Progressive retrieval: search → scan → load
 
-When the AI needs information from the vault, it should follow this sequence instead of loading files speculatively:
-
-1. **Search** — Read the relevant `ContextSummary.md` to identify which files *might* contain the answer
-2. **Scan** — If uncertain, read only the frontmatter and first heading of candidate files to confirm relevance
+When the AI needs information:
+1. **Search** — Read `index.md` to identify candidate files
+2. **Scan** — If uncertain, read only frontmatter and first heading to confirm relevance
 3. **Load** — Read the full file only when confirmed relevant
 
-This is the Markdown equivalent of MemGPT's paginated archival search. Instead of dumping an entire database into context, the AI navigates the index, narrows candidates, and loads only what it needs.
+This is the Markdown equivalent of MemGPT's paginated archival search.
 
-```
-Example: User asks "what did we decide about the data format for Concordance?"
+---
 
-Step 1 — Read decisions/ContextSummary.md
-         → Finds: "DEC-001 - Concordance data format"
-Step 2 — Load decisions/DEC-001 - Concordance data format.md
-         → Answer found. No other files needed.
+## Maintenance cadences
 
-NOT: Load all of decisions/, projects/, and people/ "just in case."
-```
+### Post-session micro-review
+When a session changed structure, conventions, or project direction:
+- Update affected notes and index.md
+- Create a decision if rationale should persist
+- Append to log.md
 
-**Teach the AI in your master document:**
+### Monthly audit
+- Review notes with oldest `last_reviewed`
+- Confirm `high` relevance is still justified
+- Merge small, overlapping notes
+- Verify index.md matches actual structure
+- Consolidate decisions (keep ≤8-10 active)
+- Run expanded lint checklist
+- Check source coverage (unprocessed sources)
 
-```markdown
-## How to find information
+### Quarterly structural review
+- Detect orphan pages and underlinked notes
+- Identify missing categories or oversized ones
+- Verify CLAUDE.md isn't absorbing context that belongs in memory/
+- Deep-clean decisions
+- Evaluate if the schema still fits your workflow
 
-When you need information from my vault:
-1. Read the ContextSummary.md of the relevant folder first.
-2. Load only the files that match the current question.
-3. If you're unsure which file has the answer, ask me rather than loading everything.
-```
+**Tip:** Keep the lint checklist in `schema.md` so the AI follows the same pattern every time.
+
+**Tip:** If you use Obsidian 1.12+, the CLI can automate many audit tasks. See [obsidian-cli.md](obsidian-cli.md).
 
 ---
 
 ## Implementation recommendations
 
 ### Start simple
-Don't try to build the whole system at once. Recommended order:
+
+Don't build the whole system at once:
+
 1. Write a basic `CLAUDE.md` (who you are, your projects, how you want to be addressed)
 2. Add `TASKS.md`
-3. Add `glossary.md`
+3. Add `memory/glossary.md`
 4. Add project files one by one as you use them
 5. Add people profiles as they become relevant
-6. Add `ContextSummary.md` files in folders as needed
-7. Add `memory/decisions/` once you start making changes whose rationale should persist
-8. Add `memory/working-context.md` once you have enough context that session continuity matters
-9. Add `memory/recent-sessions.md` once you want the AI to know what you've been working on recently
+6. Add `memory/working-context.md` once session continuity matters
+7. Add `memory/index.md` once you have enough files that navigation matters
+8. Add `memory/decisions/` once changes need durable rationale
+9. Add `sources/` once you start ingesting external material
+10. Add `memory/insights/` once conversations produce knowledge worth preserving
+11. Add `memory/schema.md` once your conventions stabilize
 
 ### Design principles
-- **Each file must be readable independently** — don't rely on the AI remembering another file from the same session
-- **Be specific, not exhaustive** — "use direct responses without disclaimers" beats three paragraphs about your communication philosophy
+
+- **Each file must be readable independently** — don't rely on the AI having read another file
+- **Be specific, not exhaustive** — "use direct responses" beats three paragraphs on communication philosophy
 - **Absolute dates, not relative** — "due 2026-04-15" instead of "in two weeks"
-- **Consistent codenames** — using the same name across all files makes it easier for the AI to connect references
+- **Consistent codenames** across all files
 
-### What NOT to put in the memory system
-- Passwords or credentials (even if they exist elsewhere in plain text, don't reference them here)
-- Information that changes very frequently (use `TASKS.md` with dates instead)
-- Routine code or architecture decisions derivable from the code itself
-- Git history or who changed what (use `git log` for that)
+### What NOT to include
 
-### A note on security
+- Passwords, API keys, tokens, or credentials — ever
+- Financial account numbers, government IDs, legal documents
+- Information that changes too frequently (use TASKS.md with dates)
+- Routine code decisions derivable from the code itself
 
-Your vault will inevitably contain personal information — names, relationships, professional context, personality traits. That's the point. But draw a hard line:
+### Security note
 
-- **Never store passwords, API keys, tokens, or credentials** in any memory file. Not even "for convenience." Use a password manager (Bitwarden, 1Password, etc.) instead.
-- **Never store financial account numbers, government IDs, or legal documents** in files that the AI reads. If you need these in your vault for personal reference, keep them in a separate folder that is explicitly excluded from AI context.
-- **Be aware of what you share.** When you paste `CLAUDE.md` into a web AI session, everything in that file is sent to a third-party server. Write it assuming it could be read by someone other than you.
-- **If your vault syncs to the cloud** (iCloud, Syncthing, etc.), ensure the sync service is one you trust. Plain Markdown files are readable by anyone with access to the storage.
+Your vault will contain personal information — that's the point. But draw a hard line:
 
-The rule of thumb: if losing access to a piece of information would cause you financial, legal, or personal harm, it doesn't belong in the memory system.
+- **Never store credentials** in any memory file. Use a password manager.
+- **Be aware of what you share.** When you paste `CLAUDE.md` into a web session, everything is sent to a third party.
+- **If your vault syncs to the cloud**, ensure you trust the sync service.
+
+Rule of thumb: if losing access to information would cause financial, legal, or personal harm, it doesn't belong in the memory system.
 
 ---
 
 ## Compatible tools
 
-| Tool                    | Compatibility | Method                              |
-|-------------------------|--------------|-------------------------------------|
-| Claude Code (CLI)       | Native       | CLAUDE.md in working directory + `~/.claude/CLAUDE.md` global |
-| Claude Desktop (Cowork) | Native       | Plugin with slash commands — see [plugin-guide.md](plugin-guide.md) |
-| VS Code Copilot         | High         | COPILOT.md + context files          |
-| Claude.ai               | Manual       | Attach or paste at start            |
-| ChatGPT                 | Manual       | Custom Instructions + attach        |
-| Cursor                  | High         | .cursorrules or context files       |
-| Obsidian + AI plugins   | Native       | Inside the vault                    |
+| Tool | How it works |
+|------|-------------|
+| Claude Code (CLI) | Native — `CLAUDE.md` in working directory + `~/.claude/CLAUDE.md` global |
+| Claude Desktop (Cowork) | Plugin with slash commands — see [plugin-guide.md](plugin-guide.md) |
+| VS Code + GitHub Copilot | `COPILOT.md` with same Tier 0 semantics |
+| Obsidian CLI (1.12+) | Vault commands for auditing and maintenance — see [obsidian-cli.md](obsidian-cli.md) |
+| Claude.ai / ChatGPT | Paste or attach at session start |
+| Cursor | `.cursorrules` or context files |
+| Any AI with file access | Attach the relevant `.md` files |
+| Standalone agent | Automated maintenance — see [automation-guide.md](automation-guide.md) |
 
 ---
 
@@ -946,26 +830,24 @@ The rule of thumb: if losing access to a piece of information would cause you fi
 
 - **Plain Markdown files** — no vendor lock-in, work in any editor
 - **Sync via iCloud / Syncthing / etc.** — available on all your devices
-- **Human-readable vault** — it's not just for the AI, it's your second brain
-- **Graph view** — visualize connections between notes
-- **Plugins** — direct AI integration if you want to go further (Smart Connections, etc.)
-
-The closest alternative is Notion, but as a proprietary database it's significantly harder to inject as context into AI tools in a fluid way.
-
----
-
-## How the system evolves
-
-This system grows organically. It's not a one-time setup. Over time:
-
-- `ContextSummary.md` files get enriched with cross-folder analysis
-- The decision log grows into a usable rationale timeline
-- People profiles gain more nuance
-- The glossary grows with terms you use repeatedly with the AI
-- The master document reflects who you are now, not who you were when you wrote it
-
-The signal that the system is working: when you open a session with "continue with [project]" and the AI picks up exactly where you left off, with the right tone, without asking who you are or what you want.
+- **Human-readable vault** — it's your second brain first, AI memory second
+- **Graph view** — visualize the shape of your wiki: clusters, orphans, bridges
+- **Wikilinks** — the connective tissue that makes files a knowledge graph
+- **Plugins** — Dataview for dynamic queries, Smart Connections for AI integration
+- **Git-friendly** — version history, branching, collaboration for free
 
 ---
 
-*System developed and refined through real-world use with Claude Code. Last updated: March 2026.*
+## Philosophy: how the system evolves
+
+**This is a foundation, not the one correct method.** Take what works, ignore what doesn't, build something better. There are many valid approaches to giving AI context; this one optimizes for transparency, portability, and human readability.
+
+The tedious part of maintaining a knowledge base is not the reading or thinking — it's the bookkeeping. Updating cross-references, keeping summaries current, noting when new data contradicts old claims. Humans abandon wikis because the maintenance burden grows faster than the value. LLMs don't get bored, don't forget to update a cross-reference, and can touch 15 files in one pass. The wiki stays maintained because the cost of maintenance is near zero.
+
+Your job is to curate sources, direct the analysis, ask good questions, and think about what it all means. The AI's job is everything else.
+
+The signal that the system is working: you open a session with "continue with [project]" and the AI picks up exactly where you left off, with the right tone, without asking who you are.
+
+---
+
+*System developed through daily use with Claude Code and GitHub Copilot. Inspired by [MemGPT](https://research.memgpt.ai), [Chetna](https://github.com/vineetkishore01/Chetna), [Open-Her OS](https://github.com/kitfoxs/open-her-os), and [Andrej Karpathy](https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f). April 2026.*
