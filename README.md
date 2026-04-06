@@ -86,6 +86,8 @@ vault/
     └── pulse/                  ← Structured emotional check-in (optional)
 ```
 
+**[photo-ingest-guide.md](photo-ingest-guide.md)** extends the Ingest operation for photography workflows — use multimodal AI to analyze your photo sessions, select the best shots, get specific editing recommendations, and improve your composition. Works with any RAW+JPEG camera.
+
 ---
 
 ## Why plain Markdown instead of a vector database
