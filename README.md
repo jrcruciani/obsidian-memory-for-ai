@@ -2,6 +2,8 @@
 
 **Turn your Obsidian vault into persistent memory for any AI assistant.**
 
+> **Version 2.1** — *The Compiled Wiki, situated.* Adds [State of the art (May 2026)](#state-of-the-art--may-2026) and [Honest limits](#honest-limits) sections to position this pattern within the now-crowded agent-memory landscape (Mem0, Zep, Letta, Cognee, Cloudflare Agent Memory, Anthropic Memory Tool, Obsidian Agent Skills). The architecture is unchanged — v2.0 already encoded what 2026 standardized.
+>
 > **Version 2.0** — *The Compiled Wiki.* Incorporates lessons from daily use since March 2026, plus ideas from [Andrej Karpathy's LLM wiki pattern](https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f).
 
 ---
@@ -125,6 +127,86 @@ The honest take: if you're already running a RAG pipeline for other reasons, thi
 
 ---
 
+## State of the art — May 2026
+
+This repository was first published in early 2026, when "AI agent memory" was a research topic. Twelve months later it's an infrastructure category with venture funding, benchmarks, and a managed-service tier. This section maps where this pattern sits within that landscape, and which of the new ideas are worth borrowing.
+
+### What 2026 standardized (and where this repo already was)
+
+The three-layer split here (sources / wiki / schema) maps cleanly onto the **CoALA framework** (Sumers, Yao et al., *Cognitive Architectures for Language Agents*) which became the dominant reference vocabulary in 2026, and onto **Tulving's 1972 taxonomy** that CoALA builds on:
+
+| This repo | CoALA / Tulving | What 2026 calls it |
+|---|---|---|
+| `memory/` (people, projects, decisions) | Semantic | "Facts" memory (Mem0, Cloudflare) |
+| `memory/log.md` + `memory/insights/` | Episodic | "Events" memory (Cloudflare); "episodes" (Zep) |
+| `CLAUDE.md` + `memory/schema.md` + `memory/triggers.md` | Procedural | "Instructions" memory (Cloudflare); "Skills" (Anthropic / Obsidian) |
+| `sources/` | External / immutable | Document store; the input side of any RAG layer |
+
+The four operations (`Ingest` / `Query` / `Lint` / `Log`) anticipated what **Cloudflare Agent Memory** (private beta, April 2026) shipped as a formal API: `ingest` / `remember` / `recall` / `forget` / `list`. The "file insights back" practice is what **Lance Martin's Claude Diary** (`/diary` + `/reflect`) and **Jesse Vincent's fsck.com episodic memory** turned into a named pattern: *reflect-after-session*.
+
+### The 2026 landscape
+
+| System | Architecture | License | Best for |
+|---|---|---|---|
+| **[Mem0](https://github.com/mem0ai/mem0)** | Vector + graph + KV; passive extraction | Apache 2.0 / managed | Personalization, returning end-users; chosen as exclusive memory provider for the AWS Agent SDK |
+| **[Zep / Graphiti](https://github.com/getzep/graphiti)** | Bi-temporal knowledge graph | Open source / managed | Entity changes over time; "who owned X in March" queries |
+| **[Letta](https://github.com/letta-ai/letta)** (formerly MemGPT) | Tiered RAM/disk; agent-managed | Apache 2.0 / managed | Long-horizon coding/research agents; multi-week sessions |
+| **[Cognee](https://github.com/topoteretes/cognee)** | Vector + KG built from documents | Open core | Unstructured document ingestion |
+| **Cloudflare Agent Memory** | Typed (Facts / Events / Instructions / Tasks) | Managed only (private beta, Apr 2026) | Teams already on Cloudflare Workers / Durable Objects |
+| **[Anthropic Memory Tool](https://docs.claude.com/en/docs/agents-and-tools/tool-use/memory-tool)** | Client-side `/memories` directory; view/create/str_replace/insert/delete | Beta (`context-management-2025-06-27`) | Drop-in for any Claude-based agent; **+39% on agentic search, −84% tokens in 100-turn evals** |
+| **[Obsidian Agent Skills](https://github.com/obsidianmd/obsidian-skills)** (Steph Ango, Jan 2026) | Markdown skill files Claude reads natively | Open source | Teaching agents to handle Obsidian's specific file conventions |
+| **This repository** | Plain Markdown vault, conventions over code | MIT | Personal context (50–500 files), full ownership, copy-paste portability across providers |
+
+A few benchmark numbers worth knowing when this question comes up:
+
+- **Letta's filesystem benchmark: 74.0% on LoCoMo** by storing conversations as plain files — beating several specialized vector-store libraries. The naive markdown approach is not as naive as it sounds, and there is now empirical cover for it.
+- **Mem0**: 66.9% LoCoMo at 0.71s with ~1.8K tokens/conversation, vs. full-context baseline at 72.9%, 9.87s, ~26K tokens. Roughly 14× cheaper for ~6 points of accuracy.
+- **Zep / Graphiti**: 63.8% on LongMemEval (the strongest temporal score), 94.8% on DMR. Pays for itself when entities change over time; less interesting for static personal context.
+- **Anthropic Memory Tool**: the headline numbers above (+39% / −84%) are from Anthropic's own evals; replicate before believing, but the direction matches everything else in the field.
+
+### What's genuinely worth borrowing
+
+If you're running this system today, four ideas from the 2026 wave are worth folding in without changing the architecture:
+
+1. **Reflect-after-session as a named ritual.** Lance Martin's `/diary` + `/reflect` pattern formalizes what `log.md` + `memory/insights/` already does, but adds a discipline: a multi-diary review that only promotes a pattern to `CLAUDE.md` when it appears 2+ times (3+ for "strong"). This guards against single-session overfitting. Worth adopting verbatim.
+2. **Bi-temporal frontmatter.** Zep's bi-temporal model (a fact has both `valid_from`/`valid_to` *and* `recorded_at`) is implementable as YAML frontmatter without changing anything else. It makes "what did I believe in March" answerable.
+3. **Anthropic Memory Tool as a runtime.** If you use Claude, the `/memories` directory the Memory Tool exposes can be pointed at this vault's `memory/` folder. You get the file-level tool (view / create / str_replace / insert / delete / rename) for free, with the +39% / −84% numbers above. This vault becomes the *content*; the Memory Tool becomes the *interface*.
+4. **Obsidian Agent Skills (Ango).** The official skill specs published by Obsidian's CEO in January 2026 are the right way to teach Claude / Copilot how to handle Obsidian's specific conventions (frontmatter, wikilinks, dataview blocks). Pair these skills with this vault — they solve different problems and compose cleanly.
+
+### What this repo deliberately does *not* do
+
+After watching twelve months of the field, the trade-offs in [Why plain Markdown instead of a vector database](#why-plain-markdown-instead-of-a-vector-database) still hold. This system is **not** trying to be Mem0, Zep, or Letta. Their job is *agent memory as managed infrastructure*; this system's job is *your memory, in files you own, that any agent can read*. Those are different problems. The honest comparison is below.
+
+---
+
+## Honest limits
+
+A pointed critique of the broader "AI + Obsidian = second brain" trend appeared in [Limited Edition Jonathan, *Stop Calling It Memory*](https://limitededitionjonathan.substack.com/p/stop-calling-it-memory-the-problem) (March 2026). It's worth reading. Most of it lands. The rest of this section addresses each criticism directly, both to mark where this system genuinely breaks and to make the case for why — within those limits — it remains the right tool for the job it was designed for.
+
+| Criticism | Where it lands | How this system holds up |
+|---|---|---|
+| **"No real querying"** — only "read file and hope" | Lands. There is no SELECT, no JOIN, no index. | True for arbitrary queries. Mitigated for the queries you actually run by `index.md`, `triggers.md`, and `ripgrep` over a small corpus. The system is built for the ~50–500 files of personal context, not for analytic workloads. If you need queries, this is the wrong layer. |
+| **"No relationships"** — wikilinks make a pretty graph but you can't traverse it programmatically | Lands. `[[wikilinks]]` are a UX feature, not a graph database. | Accepted. For multi-hop entity traversal use Zep / Graphiti. The wikilinks here are for *humans* navigating the vault and for the *agent* loading adjacent context, not for graph queries. |
+| **"Scale ceiling at 500–5,000 notes"** — token cost grows linearly | Lands at the upper end. The whole architecture assumes you never load everything. | Designed-in: `index.md` + `triggers.md` are the lazy-loading mechanism. `memory/` is hierarchical so the agent reads a handful of files per session, not the whole tree. The hard ceiling is real; this is explicitly a personal-context layer, not an enterprise knowledge base. |
+| **"No schema enforcement"** — same contact written 3 different ways across sessions | Lands as written. Markdown alone doesn't enforce anything. | The unwritten answer in v2.0 is: the lint operation is *supposed* to catch this. v2.0 leaves linting to the human and the AI; v3 will ship a portable linter. Until then: the entropy is real. |
+| **"No concurrent access"** — multi-agent writes silently corrupt files | Lands for true multi-agent setups. SQLite (WAL) handles this; flat files don't. | Accepted within this system's scope, which is **single-user, single-agent-at-a-time**. If you're orchestrating multiple agents writing concurrently to the same memory, this isn't the right substrate without an inbox/compactor pattern on top. |
+
+### What this system gives up — and what it preserves
+
+This is the trade Jonathan's critique correctly forces into the open:
+
+| If you choose… | You get | You give up |
+|---|---|---|
+| **SQLite + Kuzu** (Jonathan's stack) | Real queries, real graph traversal, schema enforcement, concurrent writes, scaling past tens of thousands of records | Plain-text portability, zero infrastructure, "copy-paste your memory to any other provider", `git diff` as an audit log, the vault doubling as a human-readable second brain |
+| **Mem0 / Zep / Letta / Cloudflare** (managed) | Mature retrieval, benchmarked accuracy, automatic decay, multi-tenant scoping, professional support | Vendor coupling (even with export commitments), opaque retrieval choices, your memory living behind an API you don't control |
+| **This repository** | Full ownership; one folder you can `tar` and move; works offline; same files across Claude / Copilot / ChatGPT / Cursor / any future tool that reads text; `git log` as memory history; you can read it with your eyes | Real querying, real relationships, automatic decay, multi-agent concurrency, scaling past low thousands of files |
+
+**Honest bottom line.** If your problem is "agents at organizational scale need queryable memory infrastructure", Jonathan is right and you should not use plain Markdown. Use SQLite + a graph DB, or pick one of Mem0 / Zep / Letta / Cloudflare. If your problem is *"I have a personal context — identity, preferences, projects, people, decisions — that I want any AI I use today and any AI I might use in 2028 to be able to read, that I can edit with my eyes and version with `git`, and that I never want to be hostage to a vendor's retrieval API"*, this system was designed for that exact problem and a year of daily use suggests it still does it well. The two problems are not in competition. Pick the layer for the job.
+
+A v3 of this repository — markdown-only, but with atomic facts, YAML schemas, and materialized views — is in design and aims to push the upper bound on "queryable" without giving up plain-text portability. Issue thread to follow.
+
+---
+
 ## Compatible tools
 
 | Tool | How it works |
@@ -150,4 +232,4 @@ The three-layer architecture (sources → wiki → schema), the four operations 
 
 ---
 
-*Developed through daily use with Claude Code and GitHub Copilot. March–April 2026.*
+*Developed through daily use with Claude Code and GitHub Copilot. March 2026 – present. Last situated against the broader landscape: May 2026.*
