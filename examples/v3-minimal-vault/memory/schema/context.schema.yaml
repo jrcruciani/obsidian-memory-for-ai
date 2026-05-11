@@ -1,0 +1,7 @@
+type: object
+required: [type, relevance, last_reviewed]
+properties:
+  type: { const: context }
+  relevance: { enum: [high, medium, low] }
+  last_reviewed: { type: string, format: date }
+

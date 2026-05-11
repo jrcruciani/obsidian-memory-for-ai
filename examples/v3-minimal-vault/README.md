@@ -55,6 +55,16 @@ The frontmatter `entity` and `predicate` are authoritative, but the path must ma
 
 Every referenced entity must appear in `memory/entities.md`. This is strict because typos in entity IDs silently split memory.
 
+### Narrative note schemas
+
+The example also includes lightweight schemas for optional human-facing narrative notes:
+
+- `memory/schema/person.schema.yaml` for `memory/people/`
+- `memory/schema/project.schema.yaml` for `memory/projects/`
+- `memory/schema/context.schema.yaml` for `memory/context/`
+
+These keep prose pages lintable when you add typed frontmatter, while preserving the v3 split: structured facts remain in `memory/facts/`, and narrative pages remain optimized for humans.
+
 ### Generated views
 
 Generated files under `memory/_views/` are committed in this example so diffs show derived-state changes. In a private vault, you may ignore `_views/` and regenerate them locally.
@@ -102,4 +112,3 @@ tools/compact.sh
 ```
 
 Run `tools/compact.sh` to review inbox entries and move safe records into canonical memory.
-

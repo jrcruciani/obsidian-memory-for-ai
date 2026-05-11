@@ -1,0 +1,8 @@
+type: object
+required: [type, entity, relevance, last_reviewed]
+properties:
+  type: { const: project }
+  entity: { type: string, pattern: "^[a-z0-9-]+$" }
+  relevance: { enum: [high, medium, low] }
+  last_reviewed: { type: string, format: date }
+
