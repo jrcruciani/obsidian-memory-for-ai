@@ -133,7 +133,7 @@ The honest take: if you're already running a RAG pipeline for other reasons, thi
 
 ## State of the art — May 2026
 
-This repository was first published in early 2026, when "AI agent memory" was a research topic. Twelve months later it's an infrastructure category with venture funding, benchmarks, and a managed-service tier. This section maps where this pattern sits within that landscape, and which of the new ideas are worth borrowing.
+This repository was first published in early 2026, when "AI agent memory" was a research topic. Six months later it's an infrastructure category with venture funding, benchmarks, and a managed-service tier. This section maps where this pattern sits within that landscape, and which of the new ideas are worth borrowing.
 
 ### What 2026 standardized (and where this repo already was)
 
