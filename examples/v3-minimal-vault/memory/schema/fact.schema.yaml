@@ -1,0 +1,16 @@
+type: object
+required: [type, entity, predicate, value, recorded_at]
+properties:
+  type: { const: fact }
+  entity: { type: string, pattern: "^[a-z0-9-]+$" }
+  predicate: { type: string, pattern: "^[a-z0-9-]+$" }
+  value: {}
+  valid_from: { type: [string, "null"], format: date }
+  valid_to: { type: [string, "null"], format: date }
+  recorded_at: { type: string, format: date-time }
+  confidence: { enum: [high, medium, low] }
+  sources: { type: array, items: { type: string } }
+  last_reviewed: { type: string, format: date }
+  superseded_by: { type: [string, "null"] }
+  tags: { type: array, items: { type: string } }
+

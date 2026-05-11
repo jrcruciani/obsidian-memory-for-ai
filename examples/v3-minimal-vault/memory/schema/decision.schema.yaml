@@ -1,0 +1,11 @@
+type: object
+required: [type, id, status, decided_at, title]
+properties:
+  type: { const: decision }
+  id: { type: string, pattern: "^DEC-[0-9]{3}$" }
+  status: { enum: [proposed, accepted, superseded, rejected] }
+  decided_at: { type: string, format: date }
+  title: { type: string }
+  entities: { type: array, items: { type: string } }
+  sources: { type: array, items: { type: string } }
+

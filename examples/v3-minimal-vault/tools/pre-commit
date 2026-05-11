@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+cd "$(dirname "$0")/.."
+python3 tools/lint.py
+tools/rebuild-views.sh
+git diff --exit-code -- memory/_views
+

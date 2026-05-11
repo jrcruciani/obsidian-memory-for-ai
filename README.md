@@ -2,6 +2,8 @@
 
 **Turn your Obsidian vault into persistent memory for any AI assistant.**
 
+> **Version 3 reference implementation** — *Atomic Markdown Memory.* A markdown-only v3 example now lives in [`examples/v3-minimal-vault/`](examples/v3-minimal-vault/), with atomic facts, controlled predicates, YAML schemas, generated views, linting, inbox compaction, and reflection tooling. See [`SPEC-v3.md`](SPEC-v3.md) for the design.
+>
 > **Version 2.1** — *The Compiled Wiki, situated.* Adds [State of the art (May 2026)](#state-of-the-art--may-2026) and [Honest limits](#honest-limits) sections to position this pattern within the now-crowded agent-memory landscape (Mem0, Zep, Letta, Cognee, Cloudflare Agent Memory, Anthropic Memory Tool, Obsidian Agent Skills). The architecture is unchanged — v2.0 already encoded what 2026 standardized.
 >
 > **Version 2.0** — *The Compiled Wiki.* Incorporates lessons from daily use since March 2026, plus ideas from [Andrej Karpathy's LLM wiki pattern](https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f).
@@ -41,7 +43,9 @@ You don't need all of this on day one. Start with just `CLAUDE.md` and `TASKS.md
 
 ## See it in action
 
-The [`examples/minimal-vault/`](examples/minimal-vault/) directory contains a complete working example — a fictional art conservator with research projects, collaborators, a glossary, a decision record, and sample sources. Copy the structure, replace the content with yours.
+The [`examples/minimal-vault/`](examples/minimal-vault/) directory contains the v2 working example — a fictional art conservator with research projects, collaborators, a glossary, a decision record, and sample sources. Copy the structure, replace the content with yours.
+
+The [`examples/v3-minimal-vault/`](examples/v3-minimal-vault/) directory contains the v3 reference implementation: atomic fact files, append-only events, controlled predicates, schema linting, generated `_views/`, inbox compaction, and `reflect.py`.
 
 ## Read the full guide
 
@@ -203,7 +207,7 @@ This is the trade Jonathan's critique correctly forces into the open:
 
 **Honest bottom line.** If your problem is "agents at organizational scale need queryable memory infrastructure", Jonathan is right and you should not use plain Markdown. Use SQLite + a graph DB, or pick one of Mem0 / Zep / Letta / Cloudflare. If your problem is *"I have a personal context — identity, preferences, projects, people, decisions — that I want any AI I use today and any AI I might use in 2028 to be able to read, that I can edit with my eyes and version with `git`, and that I never want to be hostage to a vendor's retrieval API"*, this system was designed for that exact problem and a year of daily use suggests it still does it well. The two problems are not in competition. Pick the layer for the job.
 
-A v3 of this repository — markdown-only, but with atomic facts, YAML schemas, and materialized views — is in design and aims to push the upper bound on "queryable" without giving up plain-text portability. Issue thread to follow.
+A v3 reference implementation now ships in [`examples/v3-minimal-vault/`](examples/v3-minimal-vault/). It keeps the same markdown-only portability, but adds atomic facts, controlled predicates, YAML schemas, materialized views, linting, and an inbox/compactor workflow for cooperative agent writes.
 
 ---
 

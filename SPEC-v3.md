@@ -1,10 +1,12 @@
 # SPEC v3 — Atomic Markdown Memory
 
-> **Status:** Draft / RFC. Open for feedback before implementation.
+> **Status:** Draft / RFC with reference implementation in [`examples/v3-minimal-vault/`](examples/v3-minimal-vault/).
 > **Author:** JR Cruciani
 > **Date:** May 2026
 > **Supersedes (when accepted):** v2.x architecture
 > **Implements (none of):** SQLite, Kuzu, Postgres, vector DBs, embeddings, servers, daemons, or any binary format.
+
+> **Implementation note:** The reference implementation chooses controlled predicates (`memory/schema/predicates.yaml`), commits generated `_views/` in the example vault, includes `tools/reflect.py` as a conservative inbox writer, and documents Anthropic Memory Tool mapping. These choices answer several RFC questions for the example without making them mandatory for every private vault.
 
 ---
 

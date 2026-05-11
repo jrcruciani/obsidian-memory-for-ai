@@ -1,0 +1,11 @@
+type: object
+required: [type, title, recorded_at, summary]
+properties:
+  type: { const: insight }
+  title: { type: string }
+  recorded_at: { type: string, format: date-time }
+  summary: { type: string }
+  entities: { type: array, items: { type: string } }
+  sources: { type: array, items: { type: string } }
+  confidence: { enum: [high, medium, low] }
+

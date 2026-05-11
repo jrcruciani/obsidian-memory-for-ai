@@ -1,0 +1,9 @@
+type: object
+required: [type, id, kind]
+properties:
+  type: { const: entity }
+  id: { type: string, pattern: "^[a-z0-9-]+$" }
+  kind: { enum: [person, project, org, place, concept, tool] }
+  display: { type: string }
+  aliases: { type: array, items: { type: string } }
+

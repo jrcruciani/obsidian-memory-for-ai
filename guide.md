@@ -785,6 +785,12 @@ Don't build the whole system at once:
 10. Add `memory/insights/` once conversations produce knowledge worth preserving
 11. Add `memory/schema.md` once your conventions stabilize
 
+### If you want v3 rigor
+
+The v2 pattern in this guide is prose-first and intentionally lightweight. If you want stricter agent-facing memory, use the v3 reference in [`examples/v3-minimal-vault/`](examples/v3-minimal-vault/). It adds atomic facts in `memory/facts/`, append-only events in `memory/events/`, controlled predicates, YAML schemas, generated `_views/`, a portable linter, inbox compaction, and `reflect.py`.
+
+Migration is additive: keep your existing prose pages, then start writing new durable facts atomically. Backfill older prose only when a fact becomes useful to query or validate.
+
 ### Design principles
 
 - **Each file must be readable independently** — don't rely on the AI having read another file

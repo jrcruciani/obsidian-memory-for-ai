@@ -1,0 +1,18 @@
+predicates:
+  - id: role
+    description: Current or historical role held by a person.
+  - id: base
+    description: Primary place where an entity is based.
+  - id: employer
+    description: Organization employing a person.
+  - id: primary-project
+    description: Project currently treated as primary.
+  - id: tool
+    description: Tool or platform used by an entity.
+  - id: collaborator
+    description: Person collaborating with an entity or project.
+  - id: publication-channel
+    description: Where a project is published.
+  - id: language
+    description: Preferred working language.
+
