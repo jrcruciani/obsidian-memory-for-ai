@@ -179,7 +179,7 @@ If you're running this system today, four ideas from the 2026 wave are worth fol
 
 ### What this repo deliberately does *not* do
 
-After watching twelve months of the field, the trade-offs in [Why plain Markdown instead of a vector database](#why-plain-markdown-instead-of-a-vector-database) still hold. This system is **not** trying to be Mem0, Zep, or Letta. Their job is *agent memory as managed infrastructure*; this system's job is *your memory, in files you own, that any agent can read*. Those are different problems. The honest comparison is below.
+After watching six months of the field, the trade-offs in [Why plain Markdown instead of a vector database](#why-plain-markdown-instead-of-a-vector-database) still hold. This system is **not** trying to be Mem0, Zep, or Letta. Their job is *agent memory as managed infrastructure*; this system's job is *your memory, in files you own, that any agent can read*. Those are different problems. The honest comparison is below.
 
 ---
 
