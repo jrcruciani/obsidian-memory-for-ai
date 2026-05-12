@@ -1,0 +1,27 @@
+type: object
+required: [type, operation_id, op, agent_id, created_at, status, reason]
+properties:
+  type: { const: operation }
+  operation_id: { type: string, pattern: "^op-[a-z0-9][a-z0-9_-]*$" }
+  op:
+    enum:
+      - create_fact
+      - update_fact
+      - add_event
+      - archive_fact
+      - review_fact
+      - rename_entity
+      - add_entity
+      - add_predicate
+  agent_id: { type: string, pattern: "^agent-[a-z0-9-]+-[a-f0-9]{8}$" }
+  created_at: { type: string, format: date-time }
+  target_id: { type: [string, "null"], pattern: "^[a-z0-9][a-z0-9_-]*$" }
+  target_path: { type: [string, "null"] }
+  precondition_hash: { type: [string, "null"], pattern: "^sha256:[0-9a-f]{64}$" }
+  status: { enum: [proposed, validated, applied, rejected, conflict, superseded] }
+  reason: { type: string }
+  sources: { type: array, items: { type: string } }
+  payload: { type: object }
+  applied_at: { type: string, format: date-time }
+  conflict_reason: { type: string }
+

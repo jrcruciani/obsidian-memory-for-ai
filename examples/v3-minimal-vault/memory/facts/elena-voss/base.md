@@ -1,5 +1,6 @@
 ---
 type: fact
+id: fact-elena-voss-base
 entity: elena-voss
 predicate: base
 value: "Berlin, Germany"
@@ -10,5 +11,8 @@ confidence: high
 sources: ["sources/README.md"]
 last_reviewed: 2026-05-11
 tags: [profile]
+decay:
+  review_after_days: 180
+  archive_after_valid_to: true
+  pin: false
 ---
-

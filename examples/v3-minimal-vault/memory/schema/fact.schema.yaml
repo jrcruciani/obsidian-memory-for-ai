@@ -2,6 +2,7 @@ type: object
 required: [type, entity, predicate, value, recorded_at]
 properties:
   type: { const: fact }
+  id: { type: string, pattern: "^[a-z0-9][a-z0-9_-]*$" }
   entity: { type: string, pattern: "^[a-z0-9-]+$" }
   predicate: { type: string, pattern: "^[a-z0-9-]+$" }
   value: {}
@@ -13,4 +14,4 @@ properties:
   last_reviewed: { type: string, format: date }
   superseded_by: { type: [string, "null"] }
   tags: { type: array, items: { type: string } }
-
+  decay: { type: object }

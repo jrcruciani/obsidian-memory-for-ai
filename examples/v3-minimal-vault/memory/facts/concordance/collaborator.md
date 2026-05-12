@@ -1,5 +1,6 @@
 ---
 type: fact
+id: fact-concordance-collaborator
 entity: concordance
 predicate: collaborator
 value: "Marta Delvaux"
@@ -10,5 +11,8 @@ confidence: medium
 sources: ["sources/articles/venetian-pigment-study.md"]
 last_reviewed: 2026-05-11
 tags: [project, people]
+decay:
+  review_after_days: 180
+  archive_after_valid_to: true
+  pin: false
 ---
-

@@ -5,8 +5,12 @@ cd "$(dirname "$0")/.."
 
 usage() {
   echo "Usage:"
-  echo "  tools/query.sh facts --entity ID [--predicate PREDICATE] [--on YYYY-MM-DD]"
+  echo "  tools/query.sh id ID"
+  echo "  tools/query.sh facts [--entity ID] [--predicate PREDICATE] [--on YYYY-MM-DD]"
   echo "  tools/query.sh events --since YYYY-MM-DD"
+  echo "  tools/query.sh operations [--status STATUS]"
+  echo "  tools/query.sh inbox [--agent AGENT_ID]"
+  echo "  tools/query.sh claims"
   echo "  tools/query.sh stale"
   echo "  tools/query.sh contradictions"
 }
@@ -15,6 +19,32 @@ cmd="${1:-}"
 shift || true
 
 case "$cmd" in
+  id)
+    record_id="${1:-}"
+    [[ -n "$record_id" ]] || { usage; exit 2; }
+    python3 - "$record_id" <<'PY'
+import pathlib
+import sys
+import yaml
+
+record_id = sys.argv[1]
+root = pathlib.Path.cwd()
+
+def frontmatter(path):
+    text = path.read_text(encoding="utf-8")
+    if not text.startswith("---\n"):
+        return {}
+    _, fm, _ = text.split("---", 2)
+    return yaml.safe_load(fm) or {}
+
+for path in sorted((root / "memory").rglob("*.md")):
+    if "/_views/" in path.as_posix():
+        continue
+    data = frontmatter(path)
+    if data.get("id") == record_id or data.get("operation_id") == record_id:
+        print(f"{path.relative_to(root)}: {data.get('type')}")
+PY
+    ;;
   facts)
     entity=""
     predicate=""
@@ -27,7 +57,6 @@ case "$cmd" in
         *) usage; exit 2 ;;
       esac
     done
-    [[ -n "$entity" ]] || { usage; exit 2; }
     python3 - "$entity" "$predicate" "$on_date" <<'PY'
 import datetime as dt
 import pathlib
@@ -54,7 +83,12 @@ def date_or(value, default):
         return value
     return dt.date.fromisoformat(str(value))
 
-for path in sorted((root / "memory/facts" / entity).glob("*.md")):
+if entity:
+    paths = sorted((root / "memory/facts" / entity).glob("*.md"))
+else:
+    paths = sorted((root / "memory/facts").rglob("*.md"))
+
+for path in paths:
     data = frontmatter(path)
     if data.get("type") != "fact":
         continue
@@ -92,6 +126,75 @@ PY
 )"
       echo "$file: $summary"
     done
+    ;;
+  operations)
+    status=""
+    while [[ $# -gt 0 ]]; do
+      case "$1" in
+        --status) status="$2"; shift 2 ;;
+        *) usage; exit 2 ;;
+      esac
+    done
+    python3 - "$status" <<'PY'
+import pathlib
+import sys
+import yaml
+
+status = sys.argv[1]
+root = pathlib.Path.cwd()
+
+def frontmatter(path):
+    text = path.read_text(encoding="utf-8")
+    if not text.startswith("---\n"):
+        return {}
+    _, fm, _ = text.split("---", 2)
+    return yaml.safe_load(fm) or {}
+
+for base in (root / "memory/_inbox", root / "memory/_ops"):
+    if not base.exists():
+        continue
+    for path in sorted(base.rglob("*.md")):
+        data = frontmatter(path)
+        if data.get("type") != "operation":
+            continue
+        if status and data.get("status") != status:
+            continue
+        print(f"{path.relative_to(root)}: {data.get('status')} {data.get('operation_id')} {data.get('op')}")
+PY
+    ;;
+  inbox)
+    agent=""
+    while [[ $# -gt 0 ]]; do
+      case "$1" in
+        --agent) agent="$2"; shift 2 ;;
+        *) usage; exit 2 ;;
+      esac
+    done
+    python3 - "$agent" <<'PY'
+import pathlib
+import sys
+import yaml
+
+agent = sys.argv[1]
+root = pathlib.Path.cwd()
+
+def frontmatter(path):
+    text = path.read_text(encoding="utf-8")
+    if not text.startswith("---\n"):
+        return {}
+    _, fm, _ = text.split("---", 2)
+    return yaml.safe_load(fm) or {}
+
+base = root / "memory/_inbox"
+for path in (sorted(base.rglob("*.md")) if base.exists() else []):
+    data = frontmatter(path)
+    if agent and data.get("agent_id") != agent and f"/{agent}/" not in path.as_posix():
+        continue
+    print(f"{path.relative_to(root)}: {data.get('type')} {data.get('status', '')}")
+PY
+    ;;
+  claims)
+    cat memory/_views/claims.md
     ;;
   stale)
     cat memory/_views/stale.md

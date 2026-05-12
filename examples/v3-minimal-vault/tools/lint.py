@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import hashlib
 import os
 import re
 import sys
@@ -21,6 +22,9 @@ except ImportError:  # pragma: no cover - exercised in user environments
 FRONTMATTER_RE = re.compile(r"^---\n(.*?)\n---\n?", re.DOTALL)
 WIKILINK_RE = re.compile(r"\[\[([^\]|#]+)(?:#[^\]|]+)?(?:\|[^\]]+)?\]\]")
 SLUG_RE = re.compile(r"^[a-z0-9-]+$")
+STABLE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
+AGENT_ID_RE = re.compile(r"^agent-[a-z0-9-]+-[a-f0-9]{8}$")
+HASH_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 SUPPORTED_SPEC_VERSION = "3.0"
 
 
@@ -54,6 +58,23 @@ def rel(path: Path, root: Path) -> str:
     return path.relative_to(root).as_posix()
 
 
+def file_hash(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return f"sha256:{digest.hexdigest()}"
+
+
+def safe_relative(value: Any) -> bool:
+    if value is None:
+        return True
+    if not isinstance(value, str) or not value:
+        return False
+    candidate = Path(value)
+    return not candidate.is_absolute() and ".." not in candidate.parts
+
+
 def parse_date(value: Any) -> dt.date | None:
     if value is None:
         return None
@@ -76,6 +97,20 @@ def parse_datetime(value: Any) -> dt.datetime:
     if parsed.tzinfo is None:
         raise ValueError("date-time must include timezone")
     return parsed
+
+
+def validate_agent_id(path: Path, value: Any) -> list[str]:
+    if not isinstance(value, str) or not AGENT_ID_RE.match(value):
+        return [f"'agent_id' must match {AGENT_ID_RE.pattern}"]
+    return []
+
+
+def validate_precondition_hash(path: Path, value: Any) -> list[str]:
+    if value is None:
+        return []
+    if not isinstance(value, str) or not HASH_RE.match(value):
+        return [f"'precondition_hash' must match {HASH_RE.pattern}"]
+    return []
 
 
 def validate_type(value: Any, expected: Any) -> bool:
@@ -193,20 +228,104 @@ def overlaps(a: tuple[dt.date, dt.date], b: tuple[dt.date, dt.date]) -> bool:
     return a[0] <= b[1] and b[0] <= a[1]
 
 
+def validate_claims(root: Path, schema: dict[str, Any]) -> list[Finding]:
+    findings: list[Finding] = []
+    claims_dir = root / "memory/_claims"
+    if not claims_dir.exists():
+        return findings
+    for path in sorted(claims_dir.glob("*.yaml")):
+        data = load_yaml(path)
+        if not isinstance(data, dict):
+            findings.append(Finding("ERROR", path, "claim must be a YAML object"))
+            continue
+        for error in validate_schema(path, data, schema):
+            findings.append(Finding("ERROR", path, error))
+        target_id = data.get("target_id")
+        if isinstance(target_id, str) and path.stem != target_id:
+            findings.append(Finding("ERROR", path, "claim filename must match target_id"))
+        for error in validate_agent_id(path, data.get("agent_id")):
+            findings.append(Finding("ERROR", path, error))
+        for field in ("created_at", "expires_at", "heartbeat_at"):
+            try:
+                parse_datetime(data.get(field))
+            except ValueError as exc:
+                findings.append(Finding("ERROR", path, f"{field}: {exc}"))
+    return findings
+
+
+def validate_operation_payload(
+    root: Path,
+    path: Path,
+    data: dict[str, Any],
+    schemas: dict[str, dict[str, Any]],
+    entities: set[str],
+    predicates: set[str],
+) -> list[Finding]:
+    findings: list[Finding] = []
+    payload = data.get("payload")
+    op = data.get("op")
+    if payload is None:
+        return findings
+    if not isinstance(payload, dict):
+        return [Finding("ERROR", path, "'payload' must be an object")]
+
+    payload_type = payload.get("type")
+    if payload_type in schemas:
+        for error in validate_schema(path, payload, schemas[payload_type]):
+            findings.append(Finding("ERROR", path, f"payload: {error}"))
+
+    if op in {"create_fact", "update_fact"}:
+        if payload_type != "fact":
+            findings.append(Finding("ERROR", path, f"{op} payload must have type 'fact'"))
+        entity = payload.get("entity")
+        predicate = payload.get("predicate")
+        if entity not in entities:
+            findings.append(Finding("ERROR", path, f"payload unknown entity {entity!r}"))
+        if predicate not in predicates:
+            findings.append(Finding("ERROR", path, f"payload unknown predicate {predicate!r}"))
+        try:
+            valid_from = parse_date(payload.get("valid_from"))
+            valid_to = parse_date(payload.get("valid_to"))
+            if valid_from and valid_to and valid_from > valid_to:
+                findings.append(Finding("ERROR", path, "payload valid_from must be <= valid_to"))
+        except ValueError as exc:
+            findings.append(Finding("ERROR", path, f"payload: {exc}"))
+        for source in payload.get("sources", []) or []:
+            if not (root / source).exists():
+                findings.append(Finding("ERROR", path, f"payload source does not exist: {source}"))
+
+    if op == "add_event":
+        if payload_type != "event":
+            findings.append(Finding("ERROR", path, "add_event payload must have type 'event'"))
+        for entity in payload.get("entities", []) or []:
+            if entity not in entities:
+                findings.append(Finding("ERROR", path, f"payload unknown event entity {entity!r}"))
+        for source in payload.get("sources", []) or []:
+            if not (root / source).exists():
+                findings.append(Finding("ERROR", path, f"payload source does not exist: {source}"))
+
+    return findings
+
+
 def validate(root: Path) -> list[Finding]:
     findings: list[Finding] = validate_spec_version(root)
     schema_dir = root / "memory/schema"
     schemas = {path.stem.replace(".schema", ""): load_yaml(path) for path in schema_dir.glob("*.schema.yaml")}
+    if "claim" in schemas:
+        findings.extend(validate_claims(root, schemas["claim"]))
     entities = load_entities(root)
     predicates = load_predicates(root)
     targets, by_stem = existing_link_targets(root)
     facts: list[tuple[Path, dict[str, Any]]] = []
+    stable_ids: dict[str, Path] = {}
+    operation_ids: dict[str, Path] = {}
 
     for path in markdown_files(root):
         if "/_views/" in path.as_posix():
             continue
         in_inbox = "/_inbox/" in path.as_posix()
         in_archive = "/_archive/" in path.as_posix()
+        in_ops = "/_ops/" in path.as_posix()
         data, body = split_frontmatter(path)
         typ = data.get("type")
         if typ in schemas:
@@ -214,6 +333,15 @@ def validate(root: Path) -> list[Finding]:
                 findings.append(Finding("ERROR", path, error))
         elif typ and typ not in {"entity-index", "source"}:
             findings.append(Finding("ERROR", path, f"unknown type {typ!r}"))
+
+        stable_id = data.get("id")
+        if typ not in {"decision", "entity-index"} and stable_id:
+            if not isinstance(stable_id, str) or not STABLE_ID_RE.match(stable_id):
+                findings.append(Finding("ERROR", path, f"id must match {STABLE_ID_RE.pattern}"))
+            elif stable_id in stable_ids:
+                findings.append(Finding("ERROR", path, f"duplicate id {stable_id!r} also used by {rel(stable_ids[stable_id], root)}"))
+            else:
+                stable_ids[stable_id] = path
 
         if typ == "fact":
             if not in_inbox and not in_archive:
@@ -262,6 +390,27 @@ def validate(root: Path) -> list[Finding]:
             for derived in data.get("derived_facts", []) or []:
                 if not (root / derived).exists():
                     findings.append(Finding("ERROR", path, f"derived fact does not exist: {derived}"))
+
+        if typ == "operation":
+            if not in_inbox and not in_ops:
+                findings.append(Finding("ERROR", path, "operations must live in memory/_inbox/ or memory/_ops/"))
+            operation_id = data.get("operation_id")
+            if isinstance(operation_id, str):
+                if operation_id in operation_ids:
+                    findings.append(Finding("ERROR", path, f"duplicate operation_id {operation_id!r} also used by {rel(operation_ids[operation_id], root)}"))
+                else:
+                    operation_ids[operation_id] = path
+            for error in validate_agent_id(path, data.get("agent_id")):
+                findings.append(Finding("ERROR", path, error))
+            for error in validate_precondition_hash(path, data.get("precondition_hash")):
+                findings.append(Finding("ERROR", path, error))
+            target_path = data.get("target_path")
+            if not safe_relative(target_path):
+                findings.append(Finding("ERROR", path, "target_path must be a relative path without '..'"))
+            for source in data.get("sources", []) or []:
+                if not (root / source).exists():
+                    findings.append(Finding("ERROR", path, f"source does not exist: {source}"))
+            findings.extend(validate_operation_payload(root, path, data, schemas, entities, predicates))
 
         if typ in {"decision", "insight"}:
             for entity in data.get("entities", []) or []:

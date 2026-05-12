@@ -4,7 +4,7 @@
 
 > **Prerequisites:** You already have a working memory system following the [main guide](guide.md). You understand the update protocol, proactive triggers, and maintenance cadence. You want a script — not a conversation — to handle some of that work.
 >
-> **v3.0 note:** Automation is optional and non-normative. The stable core is the Markdown toolkit in [`examples/v3-minimal-vault/`](examples/v3-minimal-vault/) plus the contract in [`SPEC-v3.md`](SPEC-v3.md). For v3 vaults, automation should write durable facts to `memory/facts/`, episodic records to `memory/events/`, generated reads to `memory/_views/`, and proposed multi-agent writes to `memory/_inbox/`.
+> **v3 note:** Automation is optional and non-normative. The stable core is the Markdown toolkit in [`examples/v3-minimal-vault/`](examples/v3-minimal-vault/) plus the contract in [`SPEC-v3.md`](SPEC-v3.md). For v3 vaults, automation should write durable facts to `memory/facts/`, episodic records to `memory/events/`, generated reads to `memory/_views/`, and proposed multi-agent writes to `memory/_inbox/`. v3.1-style agents should prefer operation envelopes via `tools/ops.py` and apply them through `tools/compact.sh`.
 
 ---
 

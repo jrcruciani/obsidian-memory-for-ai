@@ -4,6 +4,8 @@
 
 > **Version 3.0 stable** — *Atomic Markdown Memory.* The markdown-only v3 toolkit lives in [`examples/v3-minimal-vault/`](examples/v3-minimal-vault/), with atomic facts, controlled predicates, frozen YAML schemas, generated views, linting, inbox compaction, reflection tooling, and regression tests. See [`SPEC-v3.md`](SPEC-v3.md) for the compatibility contract.
 >
+> **v3.1 agentic hardening** — additive markdown-only work on top of v3.0: operation envelopes, stable record IDs, precondition hashes, advisory claims, operational views, and a validate/plan/apply compaction flow for cooperative agents. No database, daemon, embeddings, or server becomes part of the core contract.
+>
 > **Version 2.1** — *The Compiled Wiki, situated.* Legacy pattern for existing vaults. v2 remains useful and migration to v3 is additive, not a forced rewrite.
 >
 > **Version 2.0** — *The Compiled Wiki.* Incorporates lessons from daily use since March 2026, plus ideas from [Andrej Karpathy's LLM wiki pattern](https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f).
@@ -208,6 +210,18 @@ This is the trade Jonathan's critique correctly forces into the open:
 | **This repository** | Full ownership; one folder you can `tar` and move; works offline; same files across Claude / Copilot / ChatGPT / Cursor / any future tool that reads text; `git log` as memory history; you can read it with your eyes | Real querying, real relationships, automatic decay, multi-agent concurrency, scaling past low thousands of files |
 
 **Honest bottom line.** If your problem is "agents at organizational scale need queryable memory infrastructure", Jonathan is right and you should not use plain Markdown. Use SQLite + a graph DB, or pick one of Mem0 / Zep / Letta / Cloudflare. If your problem is *"I have a personal context — identity, preferences, projects, people, decisions — that I want any AI I use today and any AI I might use in 2028 to be able to read, that I can edit with my eyes and version with `git`, and that I never want to be hostage to a vendor's retrieval API"*, this system was designed for that exact problem and a year of daily use suggests it still does it well. The two problems are not in competition. Pick the layer for the job.
+
+### v3.1 answer to the agentic complaint
+
+The markdown-only stance is deliberate. v3.1 does not try to smuggle in a database as a secondary source of truth. Instead, it makes the file protocol stricter for cooperative agents:
+
+- Agents write **operation envelopes** into `_inbox/` instead of directly mutating canonical memory.
+- Typed records can carry stable `id:` values, so paths remain human-readable without being the only durable identity.
+- Updates and archives can include `precondition_hash`, giving the compactor optimistic conflict detection.
+- `_claims/` provides advisory claim files with expiry for cooperative agents. These are not transactional locks and are not safe to oversell across cloud-sync layers.
+- `_views/inbox.md`, `_views/conflicts.md`, `_views/claims.md`, `_views/operations.md`, `_views/by-id.md`, and `_views/by-predicate.md` give both humans and agents operational visibility before applying changes.
+
+This is still not SQL, not Cypher, and not WAL. It is a disciplined, auditable Markdown protocol for the personal/few-agent case.
 
 A v3 reference implementation now ships in [`examples/v3-minimal-vault/`](examples/v3-minimal-vault/). It keeps the same markdown-only portability, but adds atomic facts, controlled predicates, YAML schemas, materialized views, linting, and an inbox/compactor workflow for cooperative agent writes.
 

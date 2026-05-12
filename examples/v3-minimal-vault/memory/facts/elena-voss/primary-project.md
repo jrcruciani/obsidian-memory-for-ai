@@ -1,5 +1,6 @@
 ---
 type: fact
+id: fact-elena-voss-primary-project
 entity: elena-voss
 predicate: primary-project
 value: "Concordance"
@@ -10,5 +11,8 @@ confidence: high
 sources: ["sources/articles/venetian-pigment-study.md"]
 last_reviewed: 2026-05-11
 tags: [project]
+decay:
+  review_after_days: 180
+  archive_after_valid_to: true
+  pin: false
 ---
-

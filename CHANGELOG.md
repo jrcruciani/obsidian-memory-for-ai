@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased - v3.1 agentic hardening
+
+- Adds markdown-native operation envelopes for proposed agent writes.
+- Adds stable IDs to example facts, events, and insights.
+- Adds advisory claim files under `memory/_claims/` and applied operation receipts under `memory/_ops/applied/`.
+- Extends compaction into a validate/apply/receipt flow with precondition-hash conflict detection.
+- Adds operational generated views for inbox, claims, operations, conflicts, IDs, and predicates.
+- Expands `query.sh` and adds `tools/ops.py` for agent-facing operation workflows.
+- Documents v3.1 as a cooperative file protocol, not a database replacement.
+
 ## v3.0.0 - 2026-05-11
 
 Stable v3.0 turns the v3 RFC into the Atomic Markdown Memory toolkit:

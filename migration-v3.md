@@ -10,6 +10,8 @@ Copy these from `examples/v3-minimal-vault/` into your vault:
 memory/schema/
 memory/_views/
 memory/_inbox/
+memory/_claims/
+memory/_ops/
 memory/_archive/
 tools/
 ```
@@ -56,6 +58,15 @@ python3 tools/lint.py
 tools/rebuild-views.sh
 ```
 
+For v3.1-style agentic workflows, prefer proposed operations over direct writes:
+
+```bash
+tools/ops.py create-fact --agent agent-local-1234abcd --entity elena-voss --predicate role --value "Art conservator" --reason "Backfill durable role fact."
+tools/compact.sh
+```
+
+Operation receipts are preserved under `memory/_ops/applied/`.
+
 ## 4. Backfill only when useful
 
 When an old prose page contains a fact you actively need, extract just that fact into `memory/facts/`. Leave the prose page intact and human-readable. The vault converges through use; there is no big-bang rewrite.
@@ -81,4 +92,3 @@ python3 tools/lint.py
 ```
 
 Private vaults may ignore `_views/`, but then views must be rebuilt locally before relying on them.
-

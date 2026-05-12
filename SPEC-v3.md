@@ -7,6 +7,8 @@
 > **Implements (none of):** SQLite, Kuzu, Postgres, vector DBs, embeddings, servers, daemons, or any binary format.
 
 > **v3.0 defaults:** Controlled predicates (`memory/schema/predicates.yaml`), one fact per file, generated `_views/` committed by default, a tool-agnostic `tools/reflect.py` inbox ritual, and an informative Anthropic Memory Tool mapping for the Memory Tool surface available in May 2026.
+>
+> **v3.1 additive hardening:** The reference implementation adds markdown-native operation envelopes, stable record IDs, advisory claim files, operational views, and validate/plan/apply compaction for cooperative agent writes. These additions do not introduce a database, daemon, embeddings, server, or binary source of truth.
 
 ---
 
@@ -153,6 +155,35 @@ Multi-agent writes go through `memory/_inbox/{agent-id}/`. Each agent owns its i
 
 This isn't WAL-grade concurrency. It's *cooperative* concurrency, sufficient for the realistic case (a few agents, human in the loop). For real OLTP-style multi-agent workloads, this is the wrong substrate — and that's correctly out of scope.
 
+v3.1 makes that cooperation explicit rather than hand-wavy. Agents should prefer operation envelopes under `memory/_inbox/{agent-id}/ops/`:
+
+```yaml
+---
+type: operation
+operation_id: op-20260512t180000z-1a2b3c4d
+op: create_fact
+agent_id: agent-copilot-1a2b3c4d
+created_at: 2026-05-12T18:00:00Z
+target_id: fact-elena-voss-role
+target_path: memory/facts/elena-voss/role.md
+precondition_hash: null
+status: proposed
+reason: "Capture a durable role fact."
+sources: ["sources/README.md"]
+payload:
+  type: fact
+  id: fact-elena-voss-role
+  entity: elena-voss
+  predicate: role
+  value: "Art conservator and pigment researcher"
+  recorded_at: 2026-05-12T18:00:00Z
+---
+```
+
+The compactor validates the envelope, checks preconditions, applies the filesystem change, rebuilds views, and records an applied receipt under `memory/_ops/applied/`. Conflicts stay visible in `_inbox/` and `_views/conflicts.md`.
+
+Advisory claims live in `memory/_claims/{target-id}.yaml`. They are created with exclusive file creation, include `expires_at`, and are explicitly not transactional locks. On local filesystems they help cooperative agents avoid obvious collisions. On cloud-sync layers they are diagnostic signals, not correctness guarantees.
+
 ### P10 — Decay as ritual, not magic
 
 `tools/compact.sh` also handles decay:
@@ -162,6 +193,17 @@ This isn't WAL-grade concurrency. It's *cooperative* concurrency, sufficient for
 - Duplicate `(entity, predicate)` → surfaced in `_views/contradictions.md` for resolution.
 
 No fact is ever silently deleted. The agent can read `_archive/` if explicitly asked. `git log` retains everything.
+
+v3.1 can express decay policy in fact frontmatter:
+
+```yaml
+decay:
+  review_after_days: 180
+  archive_after_valid_to: true
+  pin: false
+```
+
+Decay remains proposal-driven. Agents may emit `review_fact` or `archive_fact` operation envelopes; humans or trusted automation apply them through the same compactor flow.
 
 ---
 
@@ -211,12 +253,23 @@ vault/
 │   │
 │   ├── _inbox/                             ← agent-scoped write staging
 │   │   └── {agent-id}/
+│   │       └── ops/{operation-id}.md       ← v3.1 proposed write envelopes
+│   ├── _claims/                            ← v3.1 advisory target claims
+│   │   └── {target-id}.yaml
+│   ├── _ops/                               ← v3.1 operation receipts
+│   │   └── applied/{operation-id}.md
 │   │
 │   ├── _archive/                           ← time-bounded facts past valid_to
 │   │   └── {year}/
 │   │
 │   └── _views/                             ← MATERIALIZED, regenerable
 │       ├── by-entity/{entity}.md
+│       ├── by-id.md
+│       ├── by-predicate.md
+│       ├── inbox.md
+│       ├── claims.md
+│       ├── operations.md
+│       ├── conflicts.md
 │       ├── timeline.md
 │       ├── contradictions.md
 │       ├── stale.md
@@ -226,6 +279,7 @@ vault/
     ├── lint.py                             ← schema + constraint validator
     ├── rebuild-views.sh                    ← regenerate _views/
     ├── compact.sh                          ← inbox merge + decay + archive
+    ├── ops.py                              ← v3.1 operation/claim helper
     ├── query.sh                            ← rg + yq ergonomic wrappers
     └── pre-commit                          ← runs lint.py, refuses on failure
 ```
@@ -243,6 +297,7 @@ type: object
 required: [type, entity, predicate, value, recorded_at]
 properties:
   type:        { const: fact }
+  id:          { type: string, pattern: "^[a-z0-9][a-z0-9_-]*$" } # v3.1 stable id
   entity:      { type: string, pattern: "^[a-z0-9-]+$" }
   predicate:   { type: string, pattern: "^[a-z0-9-]+$" }
   value:       { }                          # any YAML scalar or block
@@ -254,6 +309,7 @@ properties:
   last_reviewed: { type: string, format: date }
   superseded_by: { type: [string, "null"] }   # path to the fact that replaced this one
   tags:        { type: array, items: { type: string } }
+  decay:       { type: object }               # v3.1 review/archive policy
 ```
 
 ### `event.schema.yaml`
@@ -263,6 +319,7 @@ type: object
 required: [type, occurred_at, summary]
 properties:
   type:        { const: event }
+  id:          { type: string, pattern: "^[a-z0-9][a-z0-9_-]*$" } # v3.1 stable id
   occurred_at: { type: string, format: date-time }
   summary:     { type: string }
   entities:    { type: array, items: { type: string } }   # entity ids touched
@@ -287,6 +344,33 @@ properties:
 (Decision and insight schemas follow the same shape; omitted for brevity — see `memory/schema/` in the reference vault.)
 
 `memory/schema/predicates.yaml` is controlled per vault. The example predicates are illustrative, not a global registry; a private vault may add local predicates there without changing the v3.0 contract.
+
+### `operation.schema.yaml` (v3.1 additive)
+
+Operation envelopes are agent proposals, not canonical memory records. They let agents describe intended mutations before a human or trusted compactor applies them:
+
+```yaml
+type: object
+required: [type, operation_id, op, agent_id, created_at, status, reason]
+properties:
+  type: { const: operation }
+  operation_id: { type: string, pattern: "^op-[a-z0-9][a-z0-9_-]*$" }
+  op: { enum: [create_fact, update_fact, add_event, archive_fact, review_fact, rename_entity, add_entity, add_predicate] }
+  agent_id: { type: string, pattern: "^agent-[a-z0-9-]+-[a-f0-9]{8}$" }
+  created_at: { type: string, format: date-time }
+  target_id: { type: [string, "null"] }
+  target_path: { type: [string, "null"] }
+  precondition_hash: { type: [string, "null"] }
+  status: { enum: [proposed, validated, applied, rejected, conflict, superseded] }
+  reason: { type: string }
+  payload: { type: object }
+```
+
+`precondition_hash` is an optimistic-concurrency guard over the target file contents. It detects stale writes; it does not make the filesystem transactional.
+
+### `claim.schema.yaml` (v3.1 additive)
+
+Claims are advisory files under `memory/_claims/{target-id}.yaml`. They use exclusive file creation and TTLs to help cooperative agents avoid obvious collisions. They are intentionally weaker than locks and must be treated as diagnostic on cloud-synced filesystems.
 
 ---
 
@@ -399,8 +483,9 @@ All `tools/*` scripts are written to run with **Python 3.11+ stdlib + PyYAML** o
 
 - **`lint.py`** — validates frontmatter against `schema/`, checks constraints (P8). Exit 0 = clean.
 - **`rebuild-views.sh`** — regenerates everything under `_views/`. Idempotent. Safe to run on every commit.
-- **`compact.sh`** — interactive: walks `_inbox/*`, archives expired facts, surfaces stale entries.
-- **`query.sh`** — wrappers: `query.sh facts --entity X --predicate Y --on YYYY-MM-DD`, `query.sh events --since YYYY-MM-DD`, etc.
+- **`ops.py`** — creates v3.1 operation envelopes and advisory claims without mutating canon.
+- **`compact.sh`** — interactive: validates and applies operation envelopes, preserves applied receipts, archives expired facts, surfaces conflicts.
+- **`query.sh`** — wrappers: `query.sh facts --entity X --predicate Y --on YYYY-MM-DD`, `query.sh id ID`, `query.sh operations --status conflict`, etc.
 - **`pre-commit`** — runs `lint.py` + `rebuild-views.sh`. Refuses commit on lint failure.
 
 These ship with the vault. Cloning the vault clones the constraint engine.
@@ -439,6 +524,7 @@ This must be said plainly to avoid the "v2 was sold as memory and wasn't" trap t
 - v3 is **not** a database. It does not give you SQL, JOINs, or transactional guarantees.
 - v3 is **not** a graph engine. `[[wikilinks]]` + `_views/graph.md` is an adjacency rollup, not Cypher.
 - v3 is **not** a multi-tenant memory backend. One human, one vault, a small number of cooperative agents.
+- v3.1 claims are **not** distributed locks. They are advisory files for cooperative local agents and diagnostic signals when sync layers disagree.
 - v3 does **not** scale to millions of records. The design point is the same as v2: **50–500 personal-context files, plus an open-ended events log** that compaction keeps tractable.
 - v3 does **not** automatically forget. Decay is a ritual you run, not a background daemon.
 
@@ -474,11 +560,16 @@ Stable CLI surface:
 
 - `python3 tools/lint.py [--root PATH]`: exit `0` when clean, non-zero on errors.
 - `tools/rebuild-views.sh`: regenerate all `_views/` from source memory.
-- `tools/query.sh facts --entity ID [--predicate PREDICATE] [--on YYYY-MM-DD]`.
+- `tools/ops.py create-fact --agent AGENT --entity ID --predicate PREDICATE --value VALUE --reason TEXT`.
+- `tools/ops.py add-event --agent AGENT --summary TEXT`.
+- `tools/ops.py claim --agent AGENT --target-id ID --operation-id OP_ID`.
+- `tools/query.sh id ID`.
+- `tools/query.sh facts [--entity ID] [--predicate PREDICATE] [--on YYYY-MM-DD]`.
 - `tools/query.sh events --since YYYY-MM-DD`.
+- `tools/query.sh operations [--status STATUS]`, `tools/query.sh inbox [--agent AGENT]`, and `tools/query.sh claims`.
 - `tools/query.sh stale` and `tools/query.sh contradictions`.
-- `tools/reflect.py --agent ID --summary TEXT [--dry-run]`: write a proposed event to `_inbox`.
-- `tools/compact.sh [--yes]`: review inbox entries and archive expired facts.
+- `tools/reflect.py --agent ID --summary TEXT [--dry-run]`: write a proposed event operation to `_inbox`.
+- `tools/compact.sh [--yes]`: review/apply operation envelopes, move legacy inbox entries, and archive expired facts.
 
 Optional, non-normative integrations include Obsidian CLI, host-agent plugins, scheduled automation, provider-specific memory tools, and any managed memory service. They can improve UX but are not required for v3.0 compatibility.
 
