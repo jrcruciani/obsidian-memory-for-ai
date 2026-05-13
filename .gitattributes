@@ -1,0 +1,6 @@
+# Force LF for shell scripts and Python so the v3 toolkit stays
+# executable on macOS/Linux even when files are touched from
+# Windows or synced via iCloud / OneDrive.
+*.sh             text eol=lf
+*.py             text eol=lf
+tools/pre-commit text eol=lf
