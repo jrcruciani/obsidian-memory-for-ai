@@ -282,7 +282,7 @@ def validate_operation_payload(
         if entity not in entities:
             findings.append(Finding("ERROR", path, f"payload unknown entity {entity!r}"))
         if predicate not in predicates:
-            findings.append(Finding("ERROR", path, f"payload unknown predicate {predicate!r}"))
+            findings.append(Finding("ERROR", path, f"payload unknown predicate {predicate!r} — declare it in memory/schema/predicates.yaml"))
         try:
             valid_from = parse_date(payload.get("valid_from"))
             valid_to = parse_date(payload.get("valid_to"))
@@ -292,7 +292,7 @@ def validate_operation_payload(
             findings.append(Finding("ERROR", path, f"payload: {exc}"))
         for source in payload.get("sources", []) or []:
             if not (root / source).exists():
-                findings.append(Finding("ERROR", path, f"payload source does not exist: {source}"))
+                findings.append(Finding("ERROR", path, f"payload source does not exist: {source} — sources: items must be filesystem paths relative to the vault root, not URLs"))
 
     if op == "add_event":
         if payload_type != "event":
@@ -302,7 +302,7 @@ def validate_operation_payload(
                 findings.append(Finding("ERROR", path, f"payload unknown event entity {entity!r}"))
         for source in payload.get("sources", []) or []:
             if not (root / source).exists():
-                findings.append(Finding("ERROR", path, f"payload source does not exist: {source}"))
+                findings.append(Finding("ERROR", path, f"payload source does not exist: {source} — sources: items must be filesystem paths relative to the vault root, not URLs"))
 
     return findings
 
@@ -351,7 +351,7 @@ def validate(root: Path) -> list[Finding]:
             if entity not in entities:
                 findings.append(Finding("ERROR", path, f"unknown entity {entity!r}"))
             if predicate not in predicates:
-                findings.append(Finding("ERROR", path, f"unknown predicate {predicate!r}"))
+                findings.append(Finding("ERROR", path, f"unknown predicate {predicate!r} — declare it in memory/schema/predicates.yaml"))
             expected_dir = root / "memory/facts" / str(entity)
             if not in_inbox and not in_archive and path.parent != expected_dir:
                 findings.append(Finding("ERROR", path, f"fact must live in memory/facts/{entity}/"))
@@ -371,7 +371,7 @@ def validate(root: Path) -> list[Finding]:
                     findings.append(Finding("ERROR", path, f"superseded_by target does not exist: {superseded_by}"))
             for source in data.get("sources", []) or []:
                 if not (root / source).exists():
-                    findings.append(Finding("ERROR", path, f"source does not exist: {source}"))
+                    findings.append(Finding("ERROR", path, f"source does not exist: {source} — sources: items must be filesystem paths relative to the vault root, not URLs"))
 
         if typ == "event":
             for entity in data.get("entities", []) or []:
@@ -386,7 +386,7 @@ def validate(root: Path) -> list[Finding]:
                 findings.append(Finding("ERROR", path, str(exc)))
             for source in data.get("sources", []) or []:
                 if not (root / source).exists():
-                    findings.append(Finding("ERROR", path, f"source does not exist: {source}"))
+                    findings.append(Finding("ERROR", path, f"source does not exist: {source} — sources: items must be filesystem paths relative to the vault root, not URLs"))
             for derived in data.get("derived_facts", []) or []:
                 if not (root / derived).exists():
                     findings.append(Finding("ERROR", path, f"derived fact does not exist: {derived}"))
@@ -409,7 +409,7 @@ def validate(root: Path) -> list[Finding]:
                 findings.append(Finding("ERROR", path, "target_path must be a relative path without '..'"))
             for source in data.get("sources", []) or []:
                 if not (root / source).exists():
-                    findings.append(Finding("ERROR", path, f"source does not exist: {source}"))
+                    findings.append(Finding("ERROR", path, f"source does not exist: {source} — sources: items must be filesystem paths relative to the vault root, not URLs"))
             findings.extend(validate_operation_payload(root, path, data, schemas, entities, predicates))
 
         if typ in {"decision", "insight"}:
@@ -418,7 +418,7 @@ def validate(root: Path) -> list[Finding]:
                     findings.append(Finding("ERROR", path, f"unknown {typ} entity {entity!r}"))
             for source in data.get("sources", []) or []:
                 if not (root / source).exists():
-                    findings.append(Finding("ERROR", path, f"source does not exist: {source}"))
+                    findings.append(Finding("ERROR", path, f"source does not exist: {source} — sources: items must be filesystem paths relative to the vault root, not URLs"))
 
         if typ == "entity-index":
             for item in data.get("entities", []) or []:
