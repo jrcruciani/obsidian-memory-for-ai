@@ -14,20 +14,37 @@ The original `examples/minimal-vault/` remains the v2 reference. This directory 
 
 ## Quick start
 
+The scripts require **Python 3.11+** and **PyYAML**. The recommended pattern
+is a per-vault virtualenv so the tooling does not pollute system Python:
+
 ```bash
 cd examples/v3-minimal-vault
-python3 tools/lint.py
-tools/rebuild-views.sh
-tools/query.sh facts --entity elena-voss
-tools/query.sh id fact-elena-voss-role
-tools/query.sh events --since 2026-03-01
+
+# 1. Restore the executable bit (zip downloads, iCloud / OneDrive sync,
+#    and Windows clones can drop it).
+chmod +x tools/*.sh tools/pre-commit
+
+# 2. Create a per-vault virtualenv and install dependencies.
+python3 -m venv .venv
+.venv/bin/pip install -r requirements.txt
+
+# 3. Run the toolkit. The .sh wrappers prefer .venv/bin/python when present
+#    and fall back to python3 from PATH.
+.venv/bin/python tools/lint.py
+./tools/rebuild-views.sh
+./tools/query.sh facts --entity elena-voss
+./tools/query.sh id fact-elena-voss-role
+./tools/query.sh events --since 2026-03-01
 ```
 
-The scripts require Python 3.11+ and PyYAML:
+> **fish shell users:** a leading `.` is parsed as `source`, so
+> `.venv/bin/python` becomes `source venv/bin/python`. Use either
+> `./.venv/bin/python …` or activate the venv with
+> `source .venv/bin/activate.fish`.
 
-```bash
-python3 -m pip install PyYAML
-```
+> **No venv?** The wrappers still work — they fall back to `python3` from
+> PATH. You are then responsible for making PyYAML importable from that
+> interpreter (`python3 -m pip install PyYAML`).
 
 ## Rules implemented here
 
@@ -70,6 +87,45 @@ Facts may also carry stable `id:` values. v3.1 tools use those IDs for operation
 ### Entity policy
 
 Every referenced entity must appear in `memory/entities.md`. This is strict because typos in entity IDs silently split memory.
+
+### Common mistakes lint will catch
+
+A short field guide to errors that show up on first contact with v3 and how to
+fix them. Each item maps to a real `tools/lint.py` message.
+
+- **`source does not exist: https://…`** — `sources:` items are validated as
+  filesystem paths relative to the vault root, not as URLs. Cite external URLs
+  in the body of the document, or add a stub under `sources/articles/` and
+  point at that path.
+- **`missing required field 'recorded_at'`** — every `fact` requires
+  `recorded_at` (an ISO-8601 timestamp of when the fact was *recorded*, not
+  when it became *valid*). `valid_from` is separate and optional. Canonical
+  minimum frontmatter for a fact is:
+
+  ```yaml
+  type: fact
+  entity: jr-cruciani
+  predicate: role
+  value: "Cloud Solutions Architect"
+  recorded_at: 2026-05-13T18:51:00Z
+  valid_from: 2026-05-13
+  valid_to: null
+  confidence: high
+  sources: []
+  ```
+
+- **`unknown predicate 'X'`** — predicates are controlled by
+  `memory/schema/predicates.yaml`. If you need a new one, declare it there
+  *before* writing the fact:
+
+  ```yaml
+  predicates:
+    - id: spec-version
+      description: Declared spec version of a memory vault or schema.
+  ```
+
+- **`source: vs sources:`** — the schema field is the **plural array**
+  `sources: []`, not the singular `source:`.
 
 ### Narrative note schemas
 
