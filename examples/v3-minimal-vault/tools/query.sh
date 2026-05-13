@@ -2,6 +2,11 @@
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
+if [ -x .venv/bin/python ]; then
+  PY=.venv/bin/python
+else
+  PY=python3
+fi
 
 usage() {
   echo "Usage:"
@@ -22,7 +27,7 @@ case "$cmd" in
   id)
     record_id="${1:-}"
     [[ -n "$record_id" ]] || { usage; exit 2; }
-    python3 - "$record_id" <<'PY'
+    "$PY" - "$record_id" <<'PY'
 import pathlib
 import sys
 import yaml
@@ -57,7 +62,7 @@ PY
         *) usage; exit 2 ;;
       esac
     done
-    python3 - "$entity" "$predicate" "$on_date" <<'PY'
+    "$PY" - "$entity" "$predicate" "$on_date" <<'PY'
 import datetime as dt
 import pathlib
 import sys
@@ -114,7 +119,7 @@ PY
     find memory/events -name '*.md' | sort | while read -r file; do
       date_part="$(basename "$(dirname "$file")")"
       [[ "$date_part" < "$since" ]] && continue
-      summary="$(python3 - "$file" <<'PY'
+      summary="$("$PY" - "$file" <<'PY'
 import pathlib, sys, yaml
 text = pathlib.Path(sys.argv[1]).read_text(encoding="utf-8")
 if not text.startswith("---\n"):
@@ -135,7 +140,7 @@ PY
         *) usage; exit 2 ;;
       esac
     done
-    python3 - "$status" <<'PY'
+    "$PY" - "$status" <<'PY'
 import pathlib
 import sys
 import yaml
@@ -170,7 +175,7 @@ PY
         *) usage; exit 2 ;;
       esac
     done
-    python3 - "$agent" <<'PY'
+    "$PY" - "$agent" <<'PY'
 import pathlib
 import sys
 import yaml
