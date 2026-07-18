@@ -1,0 +1,16 @@
+{
+  "goal_id": "v4-memory-protocol",
+  "status": "completed",
+  "iteration": 1,
+  "builder_model": "Claude:Sonnet-4.6",
+  "inspector_model": "Claude:Haiku-4.5",
+  "initial_sha": "7af41fe60a068e4440022d3507c4a3aee81892d0",
+  "created_at": "2026-07-18T23:15:44+02:00",
+  "history": [
+    {
+      "iteration": 1,
+      "verdict": "PASS",
+      "timestamp": "2026-07-18T21:46:01Z"
+    }
+  ]
+}
