@@ -1,0 +1,3 @@
+# Contradictions
+
+No contradictions detected.
