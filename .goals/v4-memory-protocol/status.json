@@ -1,7 +1,7 @@
 {
   "goal_id": "v4-memory-protocol",
-  "status": "inspecting",
-  "iteration": 2,
+  "status": "building",
+  "iteration": 3,
   "builder_model": "Claude:Sonnet-4.6",
   "inspector_model": "Claude:Haiku-4.5",
   "initial_sha": "7af41fe60a068e4440022d3507c4a3aee81892d0",
@@ -11,6 +11,11 @@
       "iteration": 1,
       "verdict": "PASS",
       "timestamp": "2026-07-18T21:46:01Z"
+    },
+    {
+      "iteration": 2,
+      "verdict": "FAIL",
+      "summary": "CI did not enforce v4 lint, deterministic views and indexes, or generated-artifact drift checks."
     }
   ]
 }
