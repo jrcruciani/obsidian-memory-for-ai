@@ -1,7 +1,7 @@
 {
   "goal_id": "v4-memory-protocol",
-  "status": "completed",
-  "iteration": 1,
+  "status": "inspecting",
+  "iteration": 2,
   "builder_model": "Claude:Sonnet-4.6",
   "inspector_model": "Claude:Haiku-4.5",
   "initial_sha": "7af41fe60a068e4440022d3507c4a3aee81892d0",
