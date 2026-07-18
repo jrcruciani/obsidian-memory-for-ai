@@ -1,0 +1,12 @@
+type: object
+required: [type, id, summary, occurred_at]
+properties:
+  type: { const: event }
+  id: { type: string, pattern: "^[a-z0-9][a-z0-9_-]*$" }
+  summary: { type: string }
+  occurred_at: { type: string, format: date-time }
+  entities: { type: array, items: { type: string } }
+  sources: { type: array, items: { type: string } }
+  derived_facts: { type: array, items: { type: string } }
+  tags: { type: array, items: { type: string } }
+  body: { type: string }

@@ -1,0 +1,12 @@
+type: object
+required: [type, target_id, operation_id, agent_id, created_at, expires_at, heartbeat_at]
+properties:
+  type: { const: claim }
+  target_id: { type: string, pattern: "^[a-z0-9][a-z0-9_-]*$" }
+  operation_id: { type: string, pattern: "^op-[a-z0-9][a-z0-9_-]*$" }
+  agent_id: { type: string, pattern: "^agent-[a-z0-9-]+-[a-f0-9]{8}$" }
+  created_at: { type: string, format: date-time }
+  expires_at: { type: string, format: date-time }
+  heartbeat_at: { type: string, format: date-time }
+  status: { enum: [active, released, broken] }
+

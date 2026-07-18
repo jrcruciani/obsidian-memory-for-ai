@@ -1,0 +1,11 @@
+type: object
+required: [type, review_id, proposal_id, reviewer_id, verdict, created_at, proposal_content_hash]
+properties:
+  type: { const: review }
+  review_id: { type: string, pattern: "^rev-[a-z0-9][a-z0-9_-]*$" }
+  proposal_id: { type: string, pattern: "^prop-[a-z0-9][a-z0-9_-]*$" }
+  reviewer_id: { type: string }
+  verdict: { enum: [approved, rejected, changes_requested] }
+  created_at: { type: string, format: date-time }
+  proposal_content_hash: { type: string, pattern: "^sha256:[0-9a-f]{64}$" }
+  comment: { type: [string, "null"] }

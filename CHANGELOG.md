@@ -1,5 +1,54 @@
 # Changelog
 
+## v4.0.0 - 2026-07-01
+
+**v4 Transactional Atomic Markdown Memory — three new capabilities**
+
+### Git-native transactions
+- Adds `tools/transact.py` with `begin / add / commit / rollback / recover / list` lifecycle.
+- Transactions carry a stable `transaction_id` and caller-supplied `idempotency_key`; replaying a committed key is a no-op.
+- Optional `expected_revision` check against Git HEAD before commit; refuses unsafe publication.
+- Isolated staging under `memory/_staging/<txn-id>/` before atomically publishing to `memory/`.
+- Markdown journal/receipt written to `memory/_transactions/<txn-id>.md` on every outcome.
+- `recover --yes` rolls back any pending staging directories left by interrupted runs.
+- Adds `memory/schema/transaction.schema.yaml`.
+
+### Formal proposal/review lifecycle
+- Adds `tools/propose.py` and `tools/review.py` with full draft→proposed→approved/rejected/changes-requested→applied lifecycle.
+- Reviews are cryptographically bound to the proposal's `content_hash` at review time.
+- `memory/schema/roles.yaml` stores namespace/role policy; `lint.py` and `review.py` enforce it.
+- Self-approval is rejected at the tool level and by the linter.
+- Unauthorized reviewers (outside `allowed_reviewers` and not `admin`) are rejected.
+- Proposal governance required before `propose.py apply` proceeds.
+- Adds `memory/schema/proposal.schema.yaml` and `memory/schema/review.schema.yaml`.
+
+### Deterministic rebuildable indexes
+- Adds `tools/rebuild_indexes.py` with `build_lexical_index()` and `build_graph_index()`.
+- `memory/_indexes/lexical.md` — alphabetically sorted `entity/predicate = value [path]` for all facts.
+- `memory/_indexes/graph.md` — entity relationship graph derived from fact values and wikilinks.
+- Delete + rebuild = byte-identical output for the same canonical input.
+- `tools/query.sh` extended with `search TERM` and `graph entity ENTITY`; both use index when available and fall back to direct filesystem scan, returning identical results in both modes.
+- Adds `tools/rebuild-indexes.sh`.
+
+### Reference vault
+- New `examples/v4-minimal-vault/` with all v4 capabilities demonstrated.
+- `memory/schema/roles.yaml` with example namespace/role policy.
+- Example transaction journal, proposal, and review in `_transactions/`, `_proposals/`, `_reviews/`.
+
+### Documentation
+- New `SPEC-v4.md` — complete v4.0 protocol specification.
+- New `migration-v4.md` — step-by-step v3→v4 migration guide.
+- Updated `README.md` to present v4.0 as current stable; v3.1 clearly identified as previous stable.
+- Updated `docs/README.md` documentation map.
+
+### Tests
+- New `tests/test_v4_tools.py` with 45 regression tests covering all v4 scenarios.
+- All 62 tests pass (17 v3 + 45 v4).
+
+### v3 compatibility
+- v3 lint, views, and all 17 v3 tests continue to pass unchanged.
+- `compact.py` in the v4 vault handles legacy v3-style inbox operations.
+
 ## Unreleased - documentation cleanup
 
 - Reworks the root `README.md` as a concise v3.1 landing page.
