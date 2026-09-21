@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 import yaml
+import cli
 
 from lint import FRONTMATTER_RE, WIKILINK_RE, fact_interval, markdown_files, rel, split_frontmatter
 from memory_model import enabled, interval, visible
@@ -347,8 +348,9 @@ def main() -> int:
     if enabled(root):
         from bootstrap import build_bootstrap
         write(root / "memory/_views/bootstrap.md", build_bootstrap(root))
+    cli.result({"files": [rel(path, root) for path in sorted(views.rglob("*.md"))]})
     return 0
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(cli.run(main))

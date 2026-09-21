@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any
 
 import yaml
+import cli
 
 from lint import split_frontmatter, parse_datetime
 from memory_model import confidence, effective_fact, enabled, interval, observed, records, resolve, safe_path, visible
@@ -48,6 +49,7 @@ def cmd_facts(root: Path, args: argparse.Namespace) -> int:
     if args.history:
         rows.sort(key=lambda row: (interval(row[1])[0], observed(row[1]), rel(row[0], root)))
     found = False
+    matches = []
     for path, original in rows:
         data = effective_fact(root, original) if enabled(root) else original
         if entity and data.get("entity") != entity:
@@ -63,9 +65,11 @@ def cmd_facts(root: Path, args: argparse.Namespace) -> int:
             if score is None or score < args.min_confidence:
                 continue
         print(f"{rel(path, root)}: {data['predicate']} = {render_value(data.get('value'))}")
+        record = dict(data, path=rel(path, root))
         if args.history:
             print(f"  valid: {data.get('valid_from') or 'unknown'} -> {data.get('valid_until', data.get('valid_to')) or 'present'}; observed: {observed(data).isoformat()}")
         if args.why:
+            record["evidence"] = []
             print(f"  assertion: {data.get('assertion', 'stated')}; trust: {data.get('trust', 'agent')}; confidence: {data.get('confidence', 'unspecified')}")
             for reference in data.get("derived_from", []):
                 evidence = safe_path(root, reference, ("memory/events/", "sources/"))
@@ -74,6 +78,8 @@ def cmd_facts(root: Path, args: argparse.Namespace) -> int:
                 title = fm.get("title") or fm.get("summary") or heading
                 date = fm.get("occurred_at") or fm.get("date") or fm.get("created_at") or fm.get("recorded_at") or "undated"
                 print(f"  evidence: {reference} | {title} | {date}")
+                record["evidence"].append({"path": reference, "title": title, "date": date})
+        matches.append(record)
         found = True
     if not found:
         filters = []
@@ -82,24 +88,34 @@ def cmd_facts(root: Path, args: argparse.Namespace) -> int:
         if predicate:
             filters.append(f"predicate={predicate}")
         print(f"No facts found" + (f" ({', '.join(filters)})" if filters else "."))
+    cli.result({"facts": matches})
     return 0
 
 
 def cmd_events(root: Path, args: argparse.Namespace) -> int:
     since = getattr(args, "since", None)
+    until = getattr(args, "until", None)
+    if since and until and since > until:
+        raise ValueError("--since must be <= --until")
     found = False
+    matches = []
     for path in sorted((root / "memory/events").rglob("*.md")):
         data = frontmatter(path)
         if data.get("type") != "event":
             continue
         occurred_str = str(data.get("occurred_at", ""))
-        if since and occurred_str[:10] < since:
+        date = parse_datetime(data["occurred_at"]).astimezone(dt.timezone.utc).date()
+        if since and date < since:
+            continue
+        if until and date > until:
             continue
         entities_str = ", ".join(data.get("entities", []) or [])
         print(f"{occurred_str[:10]} — {data.get('summary')} [{entities_str}] — {rel(path, root)}")
         found = True
+        matches.append(dict(data, path=rel(path, root)))
     if not found:
         print("No events found.")
+    cli.result({"events": matches})
     return 0
 
 
@@ -112,14 +128,17 @@ def cmd_id(root: Path, args: argparse.Namespace) -> int:
         for key in ("id", "operation_id", "transaction_id", "proposal_id", "review_id"):
             if data.get(key) == record_id:
                 print(f"{rel(path, root)}: {data.get('type')}")
+                cli.result({"record": dict(data, path=rel(path, root))})
                 return 0
     print(f"No record found with id {record_id!r}")
+    cli.result({"record": None})
     return 1
 
 
 def cmd_operations(root: Path, args: argparse.Namespace) -> int:
     status_filter = getattr(args, "status", None)
     found = False
+    matches = []
     for base in (root / "memory/_inbox", root / "memory/_ops"):
         if not base.exists():
             continue
@@ -131,8 +150,10 @@ def cmd_operations(root: Path, args: argparse.Namespace) -> int:
                 continue
             print(f"{str(data.get('created_at', ''))[:19]}  {data.get('status'):<12}  {data.get('operation_id')}  ({data.get('op')})")
             found = True
+            matches.append(dict(data, path=rel(path, root)))
     if not found:
         print("No operations found.")
+    cli.result({"operations": matches})
     return 0
 
 
@@ -147,6 +168,7 @@ def cmd_search(root: Path, args: argparse.Namespace) -> int:
     else:
         results = search_facts_filesystem(root, term)
         source = "filesystem"
+    cli.result({"results": [{"entity": e, "predicate": p, "value": v, "path": path} for e, p, v, path in results]})
     if not results:
         print(f"No facts found matching {term!r}")
         return 0
@@ -170,6 +192,7 @@ def cmd_graph(root: Path, args: argparse.Namespace) -> int:
     else:
         neighbors = graph_neighbors_filesystem(root, entity)
         source = "filesystem"
+    cli.result({"entity": entity, "relationships": [{"target": target, "evidence": evidence} for target, evidence in neighbors]})
 
     if not neighbors:
         print(f"No relationships found for entity {entity!r}")
@@ -181,6 +204,7 @@ def cmd_graph(root: Path, args: argparse.Namespace) -> int:
 
 def cmd_resolve(root: Path, args: argparse.Namespace) -> int:
     candidates = resolve(root, args.name)
+    cli.result({"entity": candidates[0] if len(candidates) == 1 else None, "candidates": candidates})
     if len(candidates) == 1:
         print(candidates[0])
         return 0
@@ -197,11 +221,13 @@ def cmd_bootstrap(root: Path, args: argparse.Namespace) -> int:
     if path.exists() and path.read_text(encoding="utf-8") != text:
         print("WARNING: stale bootstrap; computing from canonical files", file=sys.stderr)
     print(text, end="")
+    cli.result({"content": text, "chars": len(text)})
     return 0
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--json", action="store_true", help="Emit JSON (accepted before or after subcommands)")
     sub = parser.add_subparsers(dest="command")
 
     p_facts = sub.add_parser("facts")
@@ -215,7 +241,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_facts.add_argument("--why", nargs=2, metavar=("ENTITY", "PREDICATE"))
 
     p_events = sub.add_parser("events")
-    p_events.add_argument("--since", default=None)
+    p_events.add_argument("--since", type=dt.date.fromisoformat)
+    p_events.add_argument("--until", type=dt.date.fromisoformat)
 
     p_id = sub.add_parser("id")
     p_id.add_argument("record_id")
@@ -268,4 +295,4 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(cli.run(main))

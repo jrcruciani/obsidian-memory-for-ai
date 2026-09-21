@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any
 
 import yaml
+import cli
 
 from lint import AGENT_ID_RE, SLUG_RE, file_hash, parse_date, parse_datetime, split_frontmatter, validate
 from memory_model import FACT_FIELDS, confidence, current, enabled, enforce_trust, observed, parse_confidence, safe_path
@@ -342,6 +343,7 @@ def cmd_begin(root: Path, args: argparse.Namespace) -> int:
     meta = begin(root, args.idempotency_key, normalize_agent(args.agent), args.expected_revision)
     label = "Idempotent skip" if meta["status"] == "committed" else "Transaction started"
     print(f"{label}: {meta['transaction_id']}")
+    cli.result(meta)
     return 0
 
 
@@ -359,6 +361,7 @@ def cmd_add(root: Path, args: argparse.Namespace) -> int:
     prepare_operations(root, meta, reviewed=True)
     save_staging_meta(root, args.txn_id, meta)
     print(f"Added {op['op']}: {op.get('entity', op.get('event_id', ''))}/{op.get('predicate', '')}")
+    cli.result(meta)
     return 0
 
 
@@ -380,11 +383,14 @@ def commit(root: Path, meta: dict[str, Any], reviewed: bool = False) -> None:
 
 def cmd_commit(root: Path, args: argparse.Namespace) -> int:
     meta = load_staging_meta(root, args.txn_id)
+    if cli.json_mode and not args.yes:
+        raise ValueError("--json commit requires --yes")
     if not args.yes and input(f"Commit {args.txn_id}? [y/N] ").lower() not in {"y", "yes"}:
         print("Cancelled.", file=sys.stderr)
         return 1
     commit(root, meta)
     print(f"Transaction {args.txn_id} committed ({len(meta['ops'])} op(s))")
+    cli.result(split_frontmatter(root / "memory/_transactions" / f"{args.txn_id}.md")[0])
     return 0
 
 
@@ -401,6 +407,7 @@ def rollback(root: Path, txn_id: str) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--json", action="store_true", help="Emit a structured JSON result")
     sub = parser.add_subparsers(dest="command", required=True)
     p = sub.add_parser("begin")
     p.add_argument("--idempotency-key", required=True)
@@ -425,17 +432,27 @@ def main() -> int:
         if args.command == "rollback":
             rollback(root, args.txn_id)
             print(f"Transaction {args.txn_id} rolled back")
+            cli.result({"transaction_id": args.txn_id, "status": "rolled_back"})
         elif args.command == "recover":
+            if cli.json_mode and not args.yes:
+                raise ValueError("--json recover requires --yes")
+            recovered = []
             for path in sorted((root / "memory/_staging").glob("*/.pending")):
                 if args.yes or input(f"Roll back {path.parent.name}? [y/N] ").lower() in {"y", "yes"}:
                     rollback(root, path.parent.name)
                     print(f"Recovered: {path.parent.name}")
+                    recovered.append(path.parent.name)
+            cli.result({"recovered": recovered})
         else:
+            rows = []
             for path in sorted((root / "memory/_transactions").glob("*.md")):
                 data, _ = split_frontmatter(path)
                 print(f"{data.get('status')}  {data.get('transaction_id')}  [{data.get('idempotency_key')}]")
+                rows.append(data)
             for path in sorted((root / "memory/_staging").glob("*/_meta.yaml")):
                 print(f"pending  {path.parent.name}")
+                rows.append(load_staging_meta(root, path.parent.name))
+            cli.result({"transactions": rows})
         return 0
     except (OSError, ValueError, yaml.YAMLError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
@@ -443,4 +460,4 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(cli.run(main))

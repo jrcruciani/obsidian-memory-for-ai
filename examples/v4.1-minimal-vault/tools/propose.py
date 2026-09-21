@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 import yaml
+import cli
 
 import transact
 from lint import file_hash, split_frontmatter
@@ -147,6 +148,7 @@ def cmd_create(root: Path, args: argparse.Namespace) -> int:
         ops = [transact.operation_from_args(args)]
     data = create_proposal(root, args.title, args.namespace, args.proposer, ops, args.status, args.idempotency_key)
     print(f"Proposal created: {data['proposal_id']}")
+    cli.result(data)
     return 0
 
 
@@ -154,6 +156,7 @@ def cmd_apply(root: Path, args: argparse.Namespace) -> int:
     path, data = load_proposal(root, args.proposal_id)
     if data.get("status") == "applied":
         print(f"Proposal {args.proposal_id} already applied (idempotent skip).")
+        cli.result(data)
         return 0
     if data.get("status") != "approved":
         raise ValueError(f"proposal is not approved (status={data.get('status')!r})")
@@ -171,6 +174,8 @@ def cmd_apply(root: Path, args: argparse.Namespace) -> int:
             if data["namespace"] != "facts":
                 raise ValueError("fact operations must use namespace facts")
             enforce_trust(root, op, data["proposer_id"], reviewed=True)
+    if cli.json_mode and not args.yes:
+        raise ValueError("--json apply requires --yes")
     if not args.yes and input(f"Apply {args.proposal_id}? [y/N] ").lower() not in {"y", "yes"}:
         print("Cancelled.", file=sys.stderr)
         return 1
@@ -184,11 +189,13 @@ def cmd_apply(root: Path, args: argparse.Namespace) -> int:
         transact.validate_candidate(root, writes)
         transact.publish(root, meta, writes)
     print(f"Proposal {args.proposal_id} applied.")
+    cli.result(updated)
     return 0
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--json", action="store_true", help="Emit a structured JSON result")
     sub = parser.add_subparsers(dest="command", required=True)
     p = sub.add_parser("create")
     p.add_argument("--title", required=True)
@@ -213,13 +220,17 @@ def main() -> int:
         if args.command == "apply":
             return cmd_apply(root, args)
         if args.command == "show":
-            path, _ = load_proposal(root, args.proposal_id)
+            path, data = load_proposal(root, args.proposal_id)
             print(path.read_text(encoding="utf-8"), end="")
+            cli.result(data)
         else:
+            rows = []
             for path in sorted((root / "memory/_proposals").glob("*.md")):
                 data, _ = split_frontmatter(path)
                 if not args.status or args.status == data.get("status"):
                     print(f"{data.get('status')}  {data.get('proposal_id')}  {data.get('title')}")
+                    rows.append(data)
+            cli.result({"proposals": rows})
         return 0
     except (OSError, ValueError, yaml.YAMLError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
@@ -227,4 +238,4 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(cli.run(main))

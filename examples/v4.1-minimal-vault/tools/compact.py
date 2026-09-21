@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any
 
 import yaml
+import cli
 
 from lint import parse_date, parse_datetime, rel, split_frontmatter
 
@@ -28,6 +29,8 @@ from lint import parse_date, parse_datetime, rel, split_frontmatter
 def confirm(prompt: str, assume_yes: bool) -> bool:
     if assume_yes:
         return True
+    if cli.json_mode:
+        raise ValueError("--json compact requires --yes or --dry-run")
     answer = input(f"{prompt} [y/N] ")
     return answer.lower() in {"y", "yes"}
 
@@ -257,6 +260,7 @@ def archive_expired_facts(root: Path, assume_yes: bool) -> int:
 def main() -> int:
     from memory_model import enabled
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--json", action="store_true", help="Emit a structured JSON result")
     parser.add_argument("--yes", action="store_true", help="Apply without prompting")
     parser.add_argument("--dry-run", action="store_true", help="Report what would be done without changes")
     args = parser.parse_args()
@@ -289,8 +293,9 @@ def main() -> int:
 
     print(f"Applied operations: {applied}")
     print(f"Operation conflicts: {conflicts}")
+    cli.result({"applied": applied, "conflicts": conflicts, "dry_run": args.dry_run})
     return 1 if conflicts and enabled(root) else 0
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(cli.run(main))

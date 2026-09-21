@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import Any
 
 import yaml
+import cli
 
 
 AGENT_ID_RE = re.compile(r"^agent-[a-z0-9-]+-[a-f0-9]{8,}$")
@@ -235,10 +236,12 @@ def cmd_review(root: Path, args: argparse.Namespace, verdict: str) -> int:
     # Update proposal status
     updated_data, _ = split_frontmatter(prop_path)
     print(f"  proposal status now: {updated_data.get('status')}")
+    cli.result({"review": fm, "proposal": updated_data})
     return 0
 
 
 def cmd_list(root: Path, args: argparse.Namespace) -> int:
+    cli.result({"reviews": []})
     rev_dir = root / "memory/_reviews"
     if not rev_dir.exists():
         print("No reviews found.")
@@ -257,11 +260,13 @@ def cmd_list(root: Path, args: argparse.Namespace) -> int:
         return 0
     for d in sorted(rows, key=lambda r: str(r.get("created_at", "")), reverse=True):
         print(f"{str(d.get('created_at', ''))[:19]}  {d.get('verdict'):<20}  {d.get('review_id')}  (for {d.get('proposal_id')})")
+    cli.result({"reviews": rows})
     return 0
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--json", action="store_true", help="Emit a structured JSON result")
     sub = parser.add_subparsers(dest="command")
 
     for cmd_name in ("approve", "reject", "request-changes"):
@@ -295,4 +300,4 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(cli.run(main))

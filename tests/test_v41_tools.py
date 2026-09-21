@@ -529,6 +529,107 @@ class V41Test(unittest.TestCase):
         self.assertIn("propose.py", self.run_tool("compact", "--yes", ok=False).stderr)
         self.assertFalse((self.vault / "memory/facts/elena-voss/tool.md").exists())
 
+    def test_json_facts_matches_text(self):
+        text = self.run_tool("query", "facts", "--entity", "elena-voss").stdout
+        payload = json.loads(self.run_tool("query", "facts", "--entity", "elena-voss", "--json").stdout)
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["text"], text)
+        for fact in payload["data"]["facts"]:
+            self.assertIn(fact["path"], text)
+            self.assertIn(str(fact["value"]), text)
+
+    def test_json_lint_matches_text_findings(self):
+        self.edit(BASE, assertion="inferred", derived_from=[])
+        text = self.run_tool("lint").stdout
+        payload = json.loads(self.run_tool("lint", "--json").stdout)
+        self.assertEqual(payload["text"], text)
+        self.assertEqual(payload["data"]["findings"][0]["level"], "WARN")
+        self.assertIn(payload["data"]["findings"][0]["message"], text)
+
+    def test_json_lint_failure(self):
+        self.edit(BASE, confidence=2)
+        payload = json.loads(self.run_tool("lint", "--json", ok=False).stdout)
+        self.assertFalse(payload["ok"])
+        self.assertTrue(any(f["level"] == "ERROR" for f in payload["data"]["findings"]))
+
+    def test_json_stale_report(self):
+        self.edit(BASE, review_after="2026-01-01")
+        payload = json.loads(self.run_tool("lint", "--stale", "--json").stdout)
+        self.assertEqual(payload["data"]["findings"][0]["level"], "STALE")
+
+    def test_json_all_query_subcommands(self):
+        queries = (("events",), ("id", "fact-elena-voss-base"), ("operations",),
+                   ("search", "Voss"), ("graph", "entity", "concordance"),
+                   ("resolve", "Elena"), ("bootstrap",))
+        for query in queries:
+            with self.subTest(query=query):
+                payload = json.loads(self.run_tool("query", *query, "--json").stdout)
+                self.assertTrue(payload["ok"])
+                self.assertIsInstance(payload["data"], dict)
+
+    def test_json_flag_before_subcommand(self):
+        payload = json.loads(self.run_tool("query", "--json", "facts", "--predicate", "base").stdout)
+        self.assertEqual(len(payload["data"]["facts"]), 1)
+
+    def test_json_argument_error_is_parseable(self):
+        result = self.run_tool("query", "facts", "--as-of", "not-a-date", "--json", ok=False)
+        payload = json.loads(result.stdout)
+        self.assertEqual(payload["exit_code"], 2)
+        self.assertIn("invalid", payload["diagnostics"])
+        self.assertNotIn("Traceback", result.stderr)
+
+    def test_json_missing_resource_is_parseable(self):
+        result = self.run_tool("transact", "commit", "--txn-id", "txn-missing", "--yes", "--json", ok=False)
+        self.assertFalse(json.loads(result.stdout)["ok"])
+        self.assertIn("transaction not found", result.stderr)
+
+    def test_json_transaction_lifecycle(self):
+        payload = json.loads(self.run_tool("transact", "begin", "--idempotency-key", "json-test",
+                                          "--agent", AGENT, "--json").stdout)
+        txn = payload["data"]["transaction_id"]
+        payload = json.loads(self.run_tool("transact", "add", "--txn-id", txn, "--op", "create_fact",
+                                          "--entity", "elena-voss", "--predicate", "tool",
+                                          "--value", "Notebook", "--json").stdout)
+        self.assertEqual(payload["data"]["ops"][0]["op"], "create_fact")
+        payload = json.loads(self.run_tool("transact", "commit", "--txn-id", txn, "--yes", "--json").stdout)
+        self.assertEqual(payload["data"]["status"], "committed")
+
+    def test_json_proposal_and_review_lifecycle(self):
+        result = self.run_tool("propose", "create", "--title", "JSON proposal", "--namespace", "facts",
+                               "--proposer", AGENT, "--op", "create_fact", "--entity", "elena-voss",
+                               "--predicate", "tool", "--value", "Notebook", "--json")
+        prop = json.loads(result.stdout)["data"]["proposal_id"]
+        review = json.loads(self.run_tool("review", "approve", "--proposal-id", prop, "--reviewer", ADMIN, "--json").stdout)
+        self.assertEqual(review["data"]["proposal"]["status"], "approved")
+        applied = json.loads(self.run_tool("propose", "apply", "--proposal-id", prop, "--yes", "--json").stdout)
+        self.assertEqual(applied["data"]["status"], "applied")
+
+    def test_json_metadata_lists(self):
+        for tool in ("transact", "propose", "review"):
+            with self.subTest(tool=tool):
+                self.assertTrue(json.loads(self.run_tool(tool, "list", "--json").stdout)["ok"])
+
+    def test_json_consolidate_and_rebuilds(self):
+        payload = json.loads(self.run_tool("consolidate", "--json").stdout)
+        self.assertEqual(payload["data"]["detections"], [])
+        for tool in ("rebuild_views", "rebuild_indexes", "compact"):
+            with self.subTest(tool=tool):
+                args = ("--dry-run",) if tool == "compact" else ()
+                self.assertTrue(json.loads(self.run_tool(tool, *args, "--json").stdout)["ok"])
+
+    def test_event_range_and_invalid_range(self):
+        text = self.run_tool("query", "events", "--since", "2026-07-15", "--until", "2026-07-15").stdout
+        self.assertIn("Elena confirmed", text)
+        self.assertNotIn("2026-07-01", text)
+        self.run_tool("query", "events", "--since", "2026-07-16", "--until", "2026-07-15", ok=False)
+
+    def test_eval_gate_catches_wrong_answer(self):
+        self.edit(BASE, value="Wrong answer")
+        result = subprocess.run([sys.executable, str(REPO / "tests/eval/run_eval.py"), "--vault", str(self.vault)],
+                                env=self.env, text=True, capture_output=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("current-base | FAIL", result.stdout)
+
 
 if __name__ == "__main__":
     unittest.main()

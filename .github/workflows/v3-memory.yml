@@ -1,4 +1,4 @@
-name: memory vaults (v3 + v4)
+name: memory vaults (v3 + v4 + v4.1)
 
 on:
   pull_request:
@@ -18,7 +18,7 @@ jobs:
       - name: Lint v3 vault
         working-directory: examples/v3-minimal-vault
         run: python tools/lint.py
-      - name: Run full unittest suite (v3 + v4)
+      - name: Run full unittest suite (all supported versions)
         run: python -m unittest discover -s tests
       - name: Rebuild v3 views (deterministic, drift check)
         working-directory: examples/v3-minimal-vault
@@ -48,3 +48,28 @@ jobs:
         run: |
           tools/rebuild-indexes.sh
           git diff --exit-code -- memory/_indexes/
+
+  validate-v41-example:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install dependencies
+        run: python -m pip install -r examples/v4.1-minimal-vault/requirements.txt
+      - name: Lint v4.1 vault
+        working-directory: examples/v4.1-minimal-vault
+        run: python tools/lint.py --strict
+      - name: Rebuild v4.1 views and indexes twice
+        working-directory: examples/v4.1-minimal-vault
+        run: |
+          MEMORY_TODAY=2026-09-21 tools/rebuild-views.sh
+          tools/rebuild-indexes.sh
+          git diff --exit-code -- memory/_views memory/_indexes
+          MEMORY_TODAY=2026-09-21 tools/rebuild-views.sh
+          tools/rebuild-indexes.sh
+          git diff --exit-code -- memory/_views memory/_indexes
+          test -z "$(git ls-files --others --exclude-standard -- memory/_views memory/_indexes)"
+      - name: Run deterministic query evaluations
+        run: python tests/eval/run_eval.py

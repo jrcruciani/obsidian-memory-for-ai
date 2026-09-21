@@ -1,0 +1,68 @@
+questions:
+  - id: current-role
+    query: [tools/query.sh, facts, --entity, elena-voss, --predicate, role]
+    contains: ["role = Lead conservator and pigment researcher"]
+    not_contains: ["Art conservator"]
+  - id: historical-role
+    query: [tools/query.sh, facts, --entity, elena-voss, --predicate, role, --as-of, "2026-07-01"]
+    contains: ["role/2026-03-15.md", "Art conservator and pigment researcher"]
+  - id: boundary-role
+    query: [tools/query.sh, facts, --entity, elena-voss, --predicate, role, --as-of, "2026-07-15"]
+    contains: ["Lead conservator"]
+    not_contains: ["Art conservator"]
+  - id: role-history
+    query: [tools/query.sh, facts, --entity, elena-voss, --predicate, role, --history]
+    contains: ["Art conservator", "Lead conservator", "observed:"]
+  - id: role-lineage
+    query: [tools/query.sh, facts, --why, elena-voss, role]
+    contains: ["memory/events/2026-07-15/role-confirmation.md", "Elena confirmed", "2026-07-15"]
+  - id: numeric-confidence
+    query: [tools/query.sh, facts, --trust, owner, --min-confidence, "0.9"]
+    contains: ["Lead conservator"]
+    not_contains: ["base ="]
+  - id: current-base
+    query: [tools/query.sh, facts, --entity, elena-voss, --predicate, base]
+    expected_stdout: "memory/facts/elena-voss/base.md: base = Berlin, Germany\n"
+  - id: working-language
+    query: [tools/query.sh, facts, --entity, elena-voss, --predicate, language]
+    contains: ["language = German"]
+  - id: alias-search
+    query: [tools/query.sh, search, Voss]
+    contains: ["elena-voss/base = Berlin, Germany", "Lead conservator"]
+    not_contains: ["Art conservator"]
+  - id: accent-resolution
+    query: [tools/query.sh, resolve, ÉLÉNA VOSS]
+    expected_stdout: "elena-voss\n"
+  - id: id-resolution
+    query: [tools/query.sh, resolve, ELENA-VOSS]
+    expected_stdout: "elena-voss\n"
+  - id: bootstrap
+    query: [tools/query.sh, bootstrap]
+    contains: ["# Bootstrap", "## Pinned facts", "Lead conservator", "generated 2026-09-21"]
+  - id: july-events
+    query: [tools/query.sh, events, --since, "2026-07-01", --until, "2026-07-31"]
+    contains: ["Concordance project reached", "Elena confirmed"]
+    not_contains: ["2026-05-11"]
+  - id: bounded-events
+    query: [tools/query.sh, events, --since, "2026-07-15", --until, "2026-07-15"]
+    contains: ["Elena confirmed"]
+    not_contains: ["2026-07-01"]
+  - id: empty-event-range
+    query: [tools/query.sh, events, --since, "2030-01-01"]
+    expected_stdout: "No events found.\n"
+  - id: project-graph
+    query: [tools/query.sh, graph, entity, concordance]
+    contains: ["marta-delvaux", "memory/facts/concordance/collaborator.md"]
+  - id: stable-id
+    query: [tools/query.sh, id, fact-elena-voss-base]
+    expected_stdout: "memory/facts/elena-voss/base.md: fact\n"
+  - id: json-facts
+    query: [tools/query.sh, facts, --entity, elena-voss, --predicate, base, --json]
+    contains: ['"ok": true', '"value": "Berlin, Germany"', '"facts":']
+  - id: no-operations
+    query: [tools/query.sh, operations]
+    expected_stdout: "No operations found.\n"
+  - id: unknown-entity
+    query: [tools/query.sh, resolve, nonexistent-person]
+    exit_code: 2
+    contains: ["No entity found"]

@@ -1,5 +1,8 @@
 # Context for AI sessions
 
+Read [AGENTS.md](AGENTS.md) for the canonical v4.1 protocol, including
+bootstrap-first loading, temporal queries, evidence, and review-gated writes.
+
 ## Who I am
 - **Name:** Elena Voss
 - **Role:** Art conservator and pigment researcher
@@ -9,7 +12,7 @@
 - **Concordance** — mapping historical pigment recipes to modern spectroscopic signatures.
 - **Gallery 5 survey** — condition survey of Cranach panels at the Gemäldegalerie.
 
-## v4 memory protocol
+## v4.1 memory protocol
 - Human-readable narrative lives in `memory/people/`, `memory/projects/`, and `memory/context/`.
 - Agent-readable facts live in `memory/facts/` and must pass `tools/lint.py`.
 - New session records live in `memory/events/YYYY-MM-DD/`.

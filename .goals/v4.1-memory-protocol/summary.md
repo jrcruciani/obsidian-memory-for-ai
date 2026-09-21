@@ -30,3 +30,12 @@ with no guessed operations and no canonical edits. Stale reporting and views
 share a configurable semantic-age policy. Legacy inbox compaction on a v4.1
 vault now routes through transactions and cannot bypass external-data review.
 67 v4.1 tests cover this phase (129 total); the clean vault produces no drafts.
+
+Phase 5 adds structured JSON on all CLIs, including parse/error paths,
+bootstrap-first AGENTS guidance, and 20 exact offline query evaluations.
+CI now enforces v4.1 strict lint, two rebuilds with drift checks, and evaluations
+alongside the unchanged older-version gates. 81 v4.1 tests (143 total) include
+a deliberately wrong-answer fixture proving the evaluation gate fails.
+
+The preserved v4 vault receives only an `AGENTS.md` navigation/protocol note;
+its tools, canonical records, generated files, and quality gates are unchanged.

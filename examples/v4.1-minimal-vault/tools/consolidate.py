@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 import yaml
+import cli
 
 from lint import WIKILINK_RE, link_exists, parse_date, parse_datetime, rel, split_frontmatter
 from memory_model import current, observed, records, safe_path, today
@@ -86,11 +87,13 @@ def detections(root: Path) -> list[dict[str, Any]]:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--json", action="store_true", help="Emit detections and drafts as JSON")
     parser.add_argument("--dry-run", action="store_true", help="Analyze without creating drafts")
     args = parser.parse_args()
     root = Path.cwd()
     try:
         findings = detections(root)
+        proposals = []
         for finding in findings:
             if args.dry_run:
                 print(f"{finding['kind']}: {finding['title']}")
@@ -98,8 +101,10 @@ def main() -> int:
                 data = create_proposal(root, finding["title"], "facts", CONSOLIDATOR, [],
                                        status="draft", key=finding["idempotency_key"], diagnosis=finding)
                 print(f"Draft {data['proposal_id']}: {finding['title']}")
+                proposals.append(data)
         if not findings:
             print("No consolidation issues detected.")
+        cli.result({"detections": findings, "proposals": proposals, "dry_run": args.dry_run})
         return 0
     except (OSError, ValueError, yaml.YAMLError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
@@ -107,4 +112,4 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(cli.run(main))

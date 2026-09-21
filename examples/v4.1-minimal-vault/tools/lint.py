@@ -11,6 +11,7 @@ import re
 import sys
 from pathlib import Path
 from typing import Any
+import cli
 
 try:
     import yaml
@@ -656,6 +657,7 @@ def validate(root: Path) -> list[Finding]:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--json", action="store_true", help="Emit structured findings as JSON")
     parser.add_argument("--root", default=Path.cwd(), type=Path, help="Vault root")
     parser.add_argument("--stale", action="store_true", help="Report stale current facts without failing by default")
     parser.add_argument("--strict", action="store_true", help="Fail on warnings or stale findings")
@@ -668,8 +670,10 @@ def main() -> int:
         findings = validate(root)
     for finding in findings:
         print(finding)
+    cli.result({"findings": [{"level": finding.level, "path": rel(finding.path, root), "message": finding.message}
+                             for finding in findings]})
     return 1 if any(item.level == "ERROR" or args.strict for item in findings) else 0
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(cli.run(main))

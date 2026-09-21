@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any
 
 import yaml
+import cli
 
 from lint import FRONTMATTER_RE, WIKILINK_RE, markdown_files, rel, split_frontmatter
 from memory_model import enabled, entities as entity_entries, fold, interval, names, records, visible
@@ -323,8 +324,9 @@ def main() -> int:
     write(root / "memory/_indexes/lexical.md", build_lexical_index(root))
     write(root / "memory/_indexes/graph.md", build_graph_index(root))
     print("Indexes rebuilt: memory/_indexes/lexical.md  memory/_indexes/graph.md")
+    cli.result({"files": ["memory/_indexes/lexical.md", "memory/_indexes/graph.md"]})
     return 0
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(cli.run(main))
