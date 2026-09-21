@@ -17,3 +17,9 @@ Proposal application and two-file review writes use this same transaction path.
 Apply rechecks real, authorized, content-bound reviews rather than trusting an
 editable approval list. These fixes are necessary for safe supersession and
 external-data review, not changes to the preserved v4 implementation.
+
+Phase 3 adds accent-folded entity resolution, alias/value/body ranking, explicit
+stale-index diagnostics, and canonical query parity (including empty results).
+Bootstrap counts every character, including headings and its self-counting
+footer. Exact-limit and one-character-over-limit tests verify the real output
+budget. There are now 52 v4.1 tests (114 total).

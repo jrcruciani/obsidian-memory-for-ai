@@ -625,8 +625,9 @@ def validate(root: Path) -> list[Finding]:
                 findings.append(Finding("ERROR", path, f"unresolved wikilink: {link}"))
 
     if v41:
-        from lint_v41 import validate_facts
+        from lint_v41 import validate_aliases, validate_facts
         findings.extend(validate_facts(root, facts))
+        findings.extend(validate_aliases(root))
         return findings
 
     for i, (path_a, data_a) in enumerate(facts):

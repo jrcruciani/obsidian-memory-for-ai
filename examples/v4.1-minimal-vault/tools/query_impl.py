@@ -17,7 +17,7 @@ from typing import Any
 import yaml
 
 from lint import split_frontmatter, parse_datetime
-from memory_model import confidence, effective_fact, enabled, interval, observed, records, safe_path, visible
+from memory_model import confidence, effective_fact, enabled, interval, observed, records, resolve, safe_path, visible
 from rebuild_indexes import (
     build_lexical,
     build_graph_edges,
@@ -148,7 +148,7 @@ def cmd_search(root: Path, args: argparse.Namespace) -> int:
         results = search_facts_filesystem(root, term)
         source = "filesystem"
     if not results:
-        print(f"No facts found matching {term!r} (searched via {source})")
+        print(f"No facts found matching {term!r}")
         return 0
     for entity, predicate, value, path_str in results:
         print(f"{entity}/{predicate} = {value}  [{path_str}]")
@@ -172,10 +172,31 @@ def cmd_graph(root: Path, args: argparse.Namespace) -> int:
         source = "filesystem"
 
     if not neighbors:
-        print(f"No relationships found for entity {entity!r} (searched via {source})")
+        print(f"No relationships found for entity {entity!r}")
         return 0
     for target, evidence in neighbors:
         print(f"{entity} → {target}  (via {evidence})")
+    return 0
+
+
+def cmd_resolve(root: Path, args: argparse.Namespace) -> int:
+    candidates = resolve(root, args.name)
+    if len(candidates) == 1:
+        print(candidates[0])
+        return 0
+    print("\n".join(candidates) if candidates else f"No entity found for {args.name!r}")
+    print("ERROR: ambiguous entity" if candidates else "ERROR: unknown entity", file=sys.stderr)
+    return 2
+
+
+def cmd_bootstrap(root: Path, args: argparse.Namespace) -> int:
+    from bootstrap import build_bootstrap
+
+    text = build_bootstrap(root)
+    path = root / "memory/_views/bootstrap.md"
+    if path.exists() and path.read_text(encoding="utf-8") != text:
+        print("WARNING: stale bootstrap; computing from canonical files", file=sys.stderr)
+    print(text, end="")
     return 0
 
 
@@ -208,6 +229,9 @@ def build_parser() -> argparse.ArgumentParser:
     p_graph = sub.add_parser("graph")
     p_graph.add_argument("subcmd", choices=["entity"])
     p_graph.add_argument("entity")
+    p_resolve = sub.add_parser("resolve")
+    p_resolve.add_argument("name")
+    sub.add_parser("bootstrap")
 
     return parser
 
@@ -234,6 +258,10 @@ def main() -> int:
         return cmd_search(root, args)
     if args.command == "graph":
         return cmd_graph(root, args)
+    if args.command == "resolve":
+        return cmd_resolve(root, args)
+    if args.command == "bootstrap":
+        return cmd_bootstrap(root, args)
 
     parser.print_help()
     return 1

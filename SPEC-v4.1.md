@@ -340,3 +340,51 @@ persists preimages/progress, and writes a committed journal before cleanup.
 Recovery restores only files still matching the transaction's before/after
 images; later edits stop recovery explicitly. This is cooperative local
 recovery, not simultaneous-reader isolation or distributed atomicity.
+
+## 10. Aliases, search, and core memory
+
+Entity-index entries and optional `type: entity` declarations in
+`memory/entities/` accept `aliases: [string...]`. NFKD normalization, removal
+of combining marks, and Unicode case folding apply to resolution and search.
+An alias cannot collide with another entity's ID or alias. Duplicate spellings
+for the same entity are harmless. `query.sh resolve NAME` prints a canonical
+ID; an unknown or ambiguous name exits 2, listing candidates for ambiguity.
+
+`query.sh search TERM` expands aliases and ranks current facts by exact
+entity/alias match, then frontmatter matches, then body matches. Ties use path
+ascending. Lexical indexes list current facts, aliases, and separate history.
+Search ranking reads canonical records (including bodies); indexes are
+human-readable navigation, not an alternate truth. Stale/corrupt indexes warn
+on stderr; missing indexes are normal. Stdout is independent of index presence.
+
+`memory/schema/bootstrap.yaml` is optional:
+
+```yaml
+budget_chars: 6000
+sections:
+  - pinned_facts
+  - recent_decisions: 5
+  - active_entities: 5
+  - recent_events: 10
+lookback_days: 30
+```
+
+These are the defaults. `pinned: true` is an optional fact field. Select
+current, world-valid pinned facts, accepted decisions, active entities, and
+events in configured order; future events/decisions are excluded. Active
+entities are selected by most events in the lookback window, ties by latest
+event then ID, before rendering. Within each section order is date descending,
+path ascending. Stop globally when the next whole item would exceed budget;
+do not truncate records or skip to smaller items.
+
+The budget counts Unicode characters, not bytes or model tokens, and includes
+every heading, newline, and the final line:
+
+```text
+<!-- bootstrap: N items, M/budget chars, generated YYYY-MM-DD -->
+```
+
+`M` is the complete file length including this footer. An impossibly small
+budget fails explicitly. All date math honors `MEMORY_TODAY`.
+`rebuild-views.sh` generates `_views/bootstrap.md`; `query.sh bootstrap`
+computes the same output when the file is absent or stale.

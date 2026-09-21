@@ -9,7 +9,32 @@ from pathlib import Path
 from typing import Any
 
 from lint import Finding, parse_date, parse_datetime, rel, split_frontmatter
-from memory_model import confidence, current, interval, observed, safe_path
+from memory_model import confidence, current, fold, interval, observed, records, safe_path
+
+
+def validate_aliases(root: Path) -> list[Finding]:
+    path = root / "memory/entities.md"
+    data, _ = split_frontmatter(path)
+    findings = []
+    owners: dict[str, str] = {}
+    entries = [*data.get("entities", []),
+               *(entry for _, entry in records(root, "memory/entities", "entity"))]
+    for entry in entries:
+        if not isinstance(entry, dict) or not isinstance(entry.get("id"), str):
+            continue
+        aliases = entry.get("aliases", [])
+        if not isinstance(aliases, list):
+            findings.append(Finding("ERROR", path, f"aliases for {entry['id']} must be a list"))
+            continue
+        for alias in [entry["id"], *aliases]:
+            if not isinstance(alias, str) or not alias.strip():
+                findings.append(Finding("ERROR", path, "aliases must be non-empty strings"))
+                continue
+            key = fold(alias)
+            if key in owners and owners[key] != entry["id"]:
+                findings.append(Finding("ERROR", path, f"alias collision: {alias!r} belongs to {owners[key]} and {entry['id']}"))
+            owners[key] = entry["id"]
+    return findings
 
 
 def validate_facts(root: Path, facts: list[tuple[Path, dict[str, Any]]]) -> list[Finding]:

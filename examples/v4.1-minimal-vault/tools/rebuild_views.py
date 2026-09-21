@@ -339,6 +339,9 @@ def main() -> int:
     build_conflicts(root, operation_rows)
     build_proposals_view(root, proposal_rows)
     build_transactions_view(root, transaction_rows)
+    if enabled(root):
+        from bootstrap import build_bootstrap
+        write(root / "memory/_views/bootstrap.md", build_bootstrap(root))
     return 0
 
 

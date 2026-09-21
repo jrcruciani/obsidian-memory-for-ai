@@ -4,7 +4,7 @@ entities:
   - id: elena-voss
     kind: person
     display: Elena Voss
-    aliases: [Elena]
+    aliases: [Elena, Voss, Eléna Voss]
   - id: concordance
     kind: project
     display: Concordance

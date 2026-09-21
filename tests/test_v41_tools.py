@@ -290,6 +290,133 @@ class V41Test(unittest.TestCase):
         self.run_tool("transact", "commit", "--txn-id", txn, "--yes")
         self.run_tool("lint")
 
+    def test_resolve_case_and_accents(self):
+        for name in ("ELENA", "Voss", "ÉLÉNA VOSS", "elena-voss"):
+            self.assertEqual(self.run_tool("query", "resolve", name).stdout.strip(), "elena-voss")
+
+    def test_resolve_unknown_exit_two(self):
+        self.assertEqual(self.run_tool("query", "resolve", "Missing", ok=False).returncode, 2)
+
+    def test_alias_collision_error(self):
+        data = self.data("memory/entities.md")["entities"]
+        data[1]["aliases"] = ["ÉLÉNA"]
+        self.edit("memory/entities.md", entities=data)
+        self.assertIn("alias collision", self.run_tool("lint", ok=False).stdout)
+
+    def test_alias_collides_with_id(self):
+        data = self.data("memory/entities.md")["entities"]
+        data[1]["aliases"] = ["ELENA-VOSS"]
+        self.edit("memory/entities.md", entities=data)
+        self.run_tool("lint", ok=False)
+
+    def test_ambiguous_resolve_lists_candidates(self):
+        data = self.data("memory/entities.md")["entities"]
+        data[1]["aliases"] = ["Elena"]
+        self.edit("memory/entities.md", entities=data)
+        result = self.run_tool("query", "resolve", "elena", ok=False)
+        self.assertEqual(result.returncode, 2)
+        self.assertEqual(result.stdout.splitlines(), ["concordance", "elena-voss"])
+
+    def test_alias_search_same_top_hit(self):
+        a = self.run_tool("query", "search", "elena").stdout
+        b = self.run_tool("query", "search", "Voss").stdout
+        self.assertEqual(a, b)
+        self.assertTrue(a.startswith("elena-voss/base"))
+
+    def test_search_ranking_entity_value_body(self):
+        self.edit("memory/facts/concordance/collaborator.md", value="Voss")
+        path = self.vault / "memory/facts/strata/publication-channel.md"
+        path.write_text(path.read_text() + "\nVoss is mentioned only in this body.\n")
+        text = self.run_tool("query", "search", "Voss").stdout
+        self.assertLess(text.index("elena-voss/base"), text.index("concordance/collaborator"))
+        self.assertLess(text.index("concordance/collaborator"), text.index("strata/publication-channel"))
+
+    def test_search_missing_stale_corrupt_parity(self):
+        self.run_tool("rebuild_indexes")
+        expected = self.run_tool("query", "search", "elena").stdout
+        path = self.vault / "memory/_indexes/lexical.md"
+        for content in ("# Stale index\n", "\ufffd corrupt\n"):
+            path.write_text(content)
+            result = self.run_tool("query", "search", "elena")
+            self.assertEqual(result.stdout, expected)
+            self.assertIn("WARNING", result.stderr)
+        path.unlink()
+        self.assertEqual(self.run_tool("query", "search", "elena").stdout, expected)
+
+    def test_empty_search_parity(self):
+        expected = self.run_tool("query", "search", "not-in-the-vault").stdout
+        shutil.rmtree(self.vault / "memory/_indexes")
+        self.assertEqual(expected, self.run_tool("query", "search", "not-in-the-vault").stdout)
+
+    def test_graph_stale_and_missing_parity(self):
+        self.run_tool("rebuild_indexes")
+        expected = self.run_tool("query", "graph", "entity", "concordance").stdout
+        path = self.vault / "memory/_indexes/graph.md"
+        path.write_text("# Bogus graph\n")
+        self.assertEqual(expected, self.run_tool("query", "graph", "entity", "concordance").stdout)
+        path.unlink()
+        self.assertEqual(expected, self.run_tool("query", "graph", "entity", "concordance").stdout)
+
+    def test_aliases_in_index(self):
+        self.run_tool("rebuild_indexes")
+        text = (self.vault / "memory/_indexes/lexical.md").read_text()
+        self.assertIn("## Aliases", text)
+        self.assertIn("Voss", text)
+
+    def test_bootstrap_under_budget_with_accurate_footer(self):
+        self.run_tool("rebuild_views")
+        text = (self.vault / "memory/_views/bootstrap.md").read_text()
+        match = re.search(r"bootstrap: (\d+) items, (\d+)/(\d+) chars", text)
+        self.assertIsNotNone(match)
+        self.assertEqual(len(text), int(match[2]))
+        self.assertLessEqual(len(text), int(match[3]))
+        self.assertIn("generated 2026-09-21", text)
+
+    def test_bootstrap_pinned_first(self):
+        text = self.run_tool("query", "bootstrap").stdout
+        self.assertLess(text.index("## Pinned facts"), text.index("## Recent decisions"))
+        self.assertIn("Lead conservator", text)
+
+    def test_bootstrap_regeneration_and_fallback(self):
+        self.run_tool("rebuild_views")
+        expected = self.run_tool("query", "bootstrap").stdout
+        path = self.vault / "memory/_views/bootstrap.md"
+        self.assertEqual(path.read_text(), expected)
+        path.unlink()
+        self.assertEqual(expected, self.run_tool("query", "bootstrap").stdout)
+        self.run_tool("rebuild_views")
+        self.assertEqual(expected, path.read_text())
+
+    def test_bootstrap_exact_budget(self):
+        self.code("from pathlib import Path; import bootstrap, yaml; "
+                  "r=Path.cwd(); options=dict(bootstrap.DEFAULTS); "
+                  "line=bootstrap.candidates(r,options)['pinned_facts'][0][2]; "
+                  "item=[('pinned_facts',line)]; budget=len(bootstrap.render(item,999,bootstrap.today())); "
+                  "assert budget==len(bootstrap.render(item,budget,bootstrap.today())); "
+                  "(r/'memory/schema/bootstrap.yaml').write_text(yaml.safe_dump({'budget_chars':budget,'sections':['pinned_facts']})); "
+                  "text=bootstrap.build_bootstrap(r); assert len(text)==budget; assert '1 items' in text")
+
+    def test_bootstrap_item_over_budget_stops(self):
+        self.code("from pathlib import Path; import bootstrap, yaml; "
+                  "r=Path.cwd(); line=bootstrap.candidates(r,bootstrap.DEFAULTS)['pinned_facts'][0][2]; "
+                  "budget=len(bootstrap.render([('pinned_facts',line)],999,bootstrap.today()))-1; "
+                  "(r/'memory/schema/bootstrap.yaml').write_text(yaml.safe_dump({'budget_chars':budget,'sections':['pinned_facts',{'recent_events':10}]})); "
+                  "text=bootstrap.build_bootstrap(r); assert len(text)<=budget; assert '0 items' in text")
+
+    def test_bootstrap_missing_config_defaults(self):
+        (self.vault / "memory/schema/bootstrap.yaml").unlink()
+        self.assertIn("/6000 chars", self.run_tool("query", "bootstrap").stdout)
+
+    def test_bootstrap_impossible_budget_fails(self):
+        (self.vault / "memory/schema/bootstrap.yaml").write_text("budget_chars: 1\n")
+        self.run_tool("query", "bootstrap", ok=False)
+
+    def test_bootstrap_date_math_and_active_entities(self):
+        self.env["MEMORY_TODAY"] = "2026-07-16"
+        text = self.run_tool("query", "bootstrap").stdout
+        self.assertIn("## Active entities", text)
+        self.assertIn("generated 2026-07-16", text)
+
 
 if __name__ == "__main__":
     unittest.main()

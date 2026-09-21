@@ -5,6 +5,7 @@ from __future__ import annotations
 import datetime as dt
 import math
 import os
+import unicodedata
 from pathlib import Path
 from typing import Any
 
@@ -140,3 +141,30 @@ def enforce_trust(root: Path, data: dict[str, Any], agent: str, reviewed: bool) 
             raise ValueError(f"agent {agent!r} cannot assert trust: {trust} under max_trust_by_role")
     if trust == "external" and namespace.get("external_requires_review") and not reviewed:
         raise ValueError("external facts require review; use propose.py create and review.py")
+
+
+def fold(value: str) -> str:
+    return "".join(c for c in unicodedata.normalize("NFKD", value.casefold())
+                   if not unicodedata.combining(c)).strip()
+
+
+def entities(root: Path) -> dict[str, dict[str, Any]]:
+    data, _ = split_frontmatter(root / "memory/entities.md")
+    result = {}
+    for entry in data.get("entities", []):
+        if isinstance(entry, dict) and isinstance(entry.get("id"), str):
+            result[entry["id"]] = dict(entry, aliases=list(entry.get("aliases") or []))
+    for _, entry in records(root, "memory/entities", "entity"):
+        if entry.get("id") in result:
+            result[entry["id"]]["aliases"].extend(entry.get("aliases") or [])
+    return result
+
+
+def names(entry: dict[str, Any]) -> set[str]:
+    return {fold(value) for value in [entry["id"], entry.get("display", ""), *entry.get("aliases", [])]
+            if isinstance(value, str) and value.strip()}
+
+
+def resolve(root: Path, name: str) -> list[str]:
+    term = fold(name)
+    return sorted(key for key, entry in entities(root).items() if term in names(entry))

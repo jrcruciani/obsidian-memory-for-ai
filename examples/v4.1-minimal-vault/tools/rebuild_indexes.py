@@ -22,7 +22,7 @@ from typing import Any
 import yaml
 
 from lint import FRONTMATTER_RE, WIKILINK_RE, markdown_files, rel, split_frontmatter
-from memory_model import enabled, interval, records, visible
+from memory_model import enabled, entities as entity_entries, fold, interval, names, records, visible
 
 
 # ---------------------------------------------------------------------------
@@ -83,6 +83,10 @@ def build_lexical_index(root: Path) -> str:
     else:
         lines.extend(entries)
     if enabled(root):
+        lines.extend(["", "## Aliases", ""])
+        for entity, entry in sorted(entity_entries(root).items()):
+            aliases = sorted(set(entry.get("aliases", [])), key=lambda name: (fold(name), name))
+            lines.append(f"- `{entity}`: {', '.join(aliases) or '(no aliases)'}")
         history = [(path, data) for path, data in records(root, "memory/facts", "fact") if not visible(data)]
         if history:
             lines.extend(["", "## History", ""])
@@ -198,6 +202,30 @@ def build_graph_index(root: Path) -> str:
 
 def search_facts_filesystem(root: Path, term: str) -> list[tuple[str, str, str, str]]:
     """Scan facts directly and return (entity, predicate, value, path) for matches."""
+    if enabled(root):
+        term_key = fold(term)
+        if not term_key:
+            raise ValueError("search term must not be empty")
+        entries = entity_entries(root)
+        exact = {entity for entity, entry in entries.items() if term_key in names(entry)}
+        expanded = {entity for entity, entry in entries.items() if any(term_key in name for name in names(entry))}
+        ranked = []
+        for path, data in records(root, "memory/facts", "fact"):
+            if not visible(data):
+                continue
+            entity, predicate = str(data.get("entity")), str(data.get("predicate"))
+            value = render_value(data.get("value"))
+            _, body = split_frontmatter(path)
+            if entity in exact:
+                rank = 0
+            elif entity in expanded or term_key in fold(yaml.safe_dump(data, allow_unicode=True)):
+                rank = 1
+            elif term_key in fold(body):
+                rank = 2
+            else:
+                continue
+            ranked.append((rank, rel(path, root), (entity, predicate, value, rel(path, root))))
+        return [row for _, _, row in sorted(ranked)]
     results: list[tuple[str, str, str, str]] = []
     term_lower = term.lower()
     for path in sorted((root / "memory/facts").rglob("*.md")):
@@ -216,6 +244,10 @@ def search_facts_filesystem(root: Path, term: str) -> list[tuple[str, str, str, 
 
 def search_facts_index(root: Path, term: str) -> list[tuple[str, str, str, str]]:
     """Search the lexical index file and return same format as filesystem scan."""
+    if enabled(root):
+        check_index(root / "memory/_indexes/lexical.md", build_lexical_index(root))
+        # Ranking needs evidence/body text; canonical records remain authoritative.
+        return search_facts_filesystem(root, term)
     index_path = root / "memory/_indexes/lexical.md"
     if not index_path.exists():
         return search_facts_filesystem(root, term)
@@ -243,6 +275,9 @@ def graph_neighbors_filesystem(root: Path, entity: str) -> list[tuple[str, str]]
 
 def graph_neighbors_index(root: Path, entity: str) -> list[tuple[str, str]]:
     """Read neighbors from graph index; fall back to filesystem scan if unavailable."""
+    if enabled(root):
+        check_index(root / "memory/_indexes/graph.md", build_graph_index(root))
+        return graph_neighbors_filesystem(root, entity)
     index_path = root / "memory/_indexes/graph.md"
     if not index_path.exists():
         return graph_neighbors_filesystem(root, entity)
@@ -260,6 +295,17 @@ def graph_neighbors_index(root: Path, entity: str) -> list[tuple[str, str]]:
             if m:
                 results.append((m.group(1), m.group(2)))
     return results
+
+
+def check_index(path: Path, expected: str) -> None:
+    if not path.exists():
+        return
+    try:
+        matches = path.read_text(encoding="utf-8") == expected.rstrip() + "\n"
+    except UnicodeError:
+        matches = False
+    if not matches:
+        print(f"WARNING: stale or corrupt {path.name}; querying canonical files instead", file=sys.stderr)
 
 
 # ---------------------------------------------------------------------------

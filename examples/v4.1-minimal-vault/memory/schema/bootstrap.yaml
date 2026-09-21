@@ -1,0 +1,7 @@
+budget_chars: 6000
+sections:
+  - pinned_facts
+  - recent_decisions: 5
+  - active_entities: 5
+  - recent_events: 10
+lookback_days: 90
