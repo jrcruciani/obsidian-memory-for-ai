@@ -22,6 +22,7 @@ from typing import Any
 import yaml
 
 from lint import FRONTMATTER_RE, WIKILINK_RE, markdown_files, rel, split_frontmatter
+from memory_model import enabled, interval, records, visible
 
 
 # ---------------------------------------------------------------------------
@@ -60,7 +61,7 @@ def build_lexical(root: Path) -> list[str]:
     rows: list[tuple[str, str, str, str]] = []
     for path in sorted((root / "memory/facts").rglob("*.md")):
         data = frontmatter(path)
-        if data.get("type") != "fact":
+        if data.get("type") != "fact" or (enabled(root) and not visible(data)):
             continue
         entity = str(data.get("entity", ""))
         predicate = str(data.get("predicate", ""))
@@ -81,6 +82,13 @@ def build_lexical_index(root: Path) -> str:
         lines.append("No facts indexed.")
     else:
         lines.extend(entries)
+    if enabled(root):
+        history = [(path, data) for path, data in records(root, "memory/facts", "fact") if not visible(data)]
+        if history:
+            lines.extend(["", "## History", ""])
+            for path, data in sorted(history, key=lambda row: (str(row[1].get("entity")), str(row[1].get("predicate")), interval(row[1])[0], rel(row[0], root))):
+                lines.append(f"- `{data['entity']}/{data['predicate']}` = {render_value(data.get('value'))} "
+                             f"({data.get('valid_from') or 'unknown'} -> {data.get('valid_until', data.get('valid_to')) or 'present'})  [`{rel(path, root)}`]")
     return "\n".join(lines)
 
 
@@ -122,7 +130,7 @@ def build_graph_edges(root: Path, entities: set[str]) -> list[tuple[str, str, st
     # Edges from fact values referencing known entity slugs
     for path in sorted((root / "memory/facts").rglob("*.md")):
         data = frontmatter(path)
-        if data.get("type") != "fact":
+        if data.get("type") != "fact" or (enabled(root) and not visible(data)):
             continue
         source_entity = str(data.get("entity", ""))
         value = str(data.get("value", ""))

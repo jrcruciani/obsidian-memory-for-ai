@@ -157,6 +157,9 @@ def _proposal_body(data: dict[str, Any]) -> str:
 
 
 def cmd_review(root: Path, args: argparse.Namespace, verdict: str) -> int:
+    import propose
+    import transact
+
     prop_id = args.proposal_id
     reviewer_id = normalize_agent(args.reviewer)
     comment = getattr(args, "comment", None) or ""
@@ -164,6 +167,12 @@ def cmd_review(root: Path, args: argparse.Namespace, verdict: str) -> int:
     prop_path, prop_data = load_proposal(root, prop_id)
     if not prop_path:
         print(f"ERROR: proposal not found: {prop_id}", file=sys.stderr)
+        return 1
+    if prop_data.get("content_hash") != propose.content_hash_of(prop_data):
+        print("ERROR: proposal content_hash does not match contents; create a new proposal", file=sys.stderr)
+        return 1
+    if not prop_data.get("ops"):
+        print("ERROR: diagnostic draft needs a repair proposal before review", file=sys.stderr)
         return 1
 
     # Only open proposals can be reviewed
@@ -207,13 +216,23 @@ def cmd_review(root: Path, args: argparse.Namespace, verdict: str) -> int:
 
     rev_dir = root / "memory/_reviews"
     rev_path = rev_dir / f"{rev_id}.md"
-    write_markdown(rev_path, fm, body)
+    updated = dict(prop_data)
+    if verdict == "approved":
+        updated["approvals"] = sorted(set(propose.valid_approvals(root, prop_data) + [reviewer_id]))
+        if len(updated["approvals"]) >= propose._required_approvals(roles, namespace):
+            updated["status"] = "approved"
+    else:
+        updated["status"] = verdict
+        updated["approvals"] = []
+    transact.commit_records(root, f"review-{rev_id}", reviewer_id, {
+        rev_path.relative_to(root).as_posix(): transact.markdown(fm, body),
+        prop_path.relative_to(root).as_posix(): transact.markdown(updated, _proposal_body(updated)),
+    })
     print(f"Review submitted: {rev_id}")
     print(f"  verdict: {verdict}")
     print(f"  proposal: {prop_id}")
 
     # Update proposal status
-    update_proposal_status(prop_path, prop_data, verdict, reviewer_id)
     updated_data, _ = split_frontmatter(prop_path)
     print(f"  proposal status now: {updated_data.get('status')}")
     return 0

@@ -12,6 +12,7 @@ from typing import Any
 import yaml
 
 from lint import FRONTMATTER_RE, WIKILINK_RE, fact_interval, markdown_files, rel, split_frontmatter
+from memory_model import enabled, interval, visible
 
 
 def today() -> dt.date:
@@ -118,8 +119,15 @@ def build_by_entity(root: Path, rows: list[tuple[Path, dict[str, Any]]]) -> None
     for entity, items in sorted(grouped.items()):
         lines = [f"# Facts — {entity}", ""]
         for path, data in sorted(items, key=lambda item: (item[1]["predicate"], rel(item[0], root))):
+            if enabled(root) and not visible(data):
+                continue
             valid = f"{data.get('valid_from') or 'unknown'} → {data.get('valid_to') or 'present'}"
             lines.append(f"- **{data['predicate']}**: {render_value(data.get('value'))} ({valid}) — `{rel(path, root)}`")
+        if enabled(root) and any(not visible(data) for _, data in items):
+            lines.extend(["", "## Timeline", ""])
+            for path, data in sorted(items, key=lambda item: (interval(item[1])[0], rel(item[0], root))):
+                lines.append(f"- {data.get('valid_from') or 'unknown'} → {data.get('valid_until', data.get('valid_to')) or 'present'}: "
+                             f"**{data['predicate']}** = {render_value(data.get('value'))} — `{rel(path, root)}`")
         write(root / "memory/_views/by-entity" / f"{entity}.md", "\n".join(lines))
 
 
@@ -132,6 +140,11 @@ def build_timeline(root: Path, rows: list[tuple[Path, dict[str, Any]]]) -> None:
 
 
 def build_contradictions(root: Path, rows: list[tuple[Path, dict[str, Any]]]) -> None:
+    if enabled(root):
+        from lint_v41 import validate_facts
+        issues = [str(item) for item in validate_facts(root, rows) if "contradicts" in item.message or "exactly one" in item.message]
+        write(root / "memory/_views/contradictions.md", "# Contradictions\n\n" + "\n".join(issues or ["No contradictions detected."]))
+        return
     lines = ["# Contradictions", ""]
     found = False
     for i, (path_a, data_a) in enumerate(rows):
@@ -212,6 +225,8 @@ def build_by_predicate(root: Path, rows: list[tuple[Path, dict[str, Any]]]) -> N
     lines = ["# Facts by predicate", ""]
     found = False
     for path, data in sorted(rows, key=lambda item: (item[1]["predicate"], item[1]["entity"], rel(item[0], root))):
+        if enabled(root) and not visible(data):
+            continue
         found = True
         lines.append(f"- **{data['predicate']}** — `{data['entity']}` = {render_value(data.get('value'))} — `{rel(path, root)}`")
     if not found:

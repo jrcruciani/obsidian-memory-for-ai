@@ -280,3 +280,63 @@ The following remain explicitly out of scope:
 - Git LFS, model fine-tuning, semantic answer generation, or binary indexes
 - Destructive recovery commands that discard unrelated user changes
 - Replacement of Markdown/YAML or Git as canonical durable knowledge
+
+## 9. Temporal facts and evidence
+
+Optional fact fields: `valid_until` (date/null), `observed_at` (zoned
+datetime/null), `supersedes` (vault-relative fact path/null), `derived_from`
+(event/source paths), `assertion: stated|inferred|observed`, and
+`trust: owner|agent|external`. Numeric confidence is in 0..1; legacy
+`high|medium|low` remains valid and has no implicit numeric conversion.
+
+`valid_from` already exists. v4.1 windows are half-open:
+the old value ends immediately before the new value's `valid_from`.
+`observed_at` defaults to `created_at`, then legacy `recorded_at`.
+`valid_to` remains an inclusive legacy boundary; do not set both end fields.
+Defaults are query/lint interpretations, not automatic canonical rewrites.
+
+The current slot remains `memory/facts/{entity}/{predicate}.md`. Superseding
+moves its prior content into `{predicate}/{valid_from}.md` and sets
+`valid_until`. When the old start is unknown, the recorded date names the
+file without asserting a world-valid start. Collisions use `-2`, `-3`, etc.
+The new fact links backward through `supersedes` and has a distinct stable ID.
+One-day boundary discrepancies warn; larger discrepancies fail.
+
+```bash
+python3 tools/transact.py begin --idempotency-key role-change --agent agent-local-1234abcd
+python3 tools/transact.py add --txn-id <txn-id> --op supersede_fact \
+  --entity elena-voss --predicate role --value "Research director" \
+  --valid-from 2026-10-01 --derived-from memory/events/2026-07-15/role-confirmation.md \
+  --assertion stated --trust agent --confidence 0.9
+python3 tools/transact.py commit --txn-id <txn-id> --yes
+tools/query.sh facts --entity elena-voss --predicate role --as-of 2026-07-01
+tools/query.sh facts --entity elena-voss --predicate role --history
+tools/query.sh facts --why elena-voss role
+```
+
+Use the same operation flags with `propose.py create`, or `--ops-file` with
+a YAML/JSON operation list for a multi-operation proposal. `create_event`
+supports `--event-id`, `--occurred-at`, `--summary`, `--entities`, `--body`,
+and optional structured `--asserts`. Existing events cannot be overwritten.
+
+Optional facts-namespace policy in `roles.yaml`:
+
+```yaml
+max_trust_by_role:
+  proposer: agent
+  reviewer: owner
+  admin: owner
+external_requires_review: true
+```
+
+The trust ordering is external < agent < owner. An actor must have a configured
+role when caps are present. Reviews do not elevate the proposer's trust cap.
+External writes require a genuinely approved proposal when configured; direct
+transactions refuse them. Missing trust defaults to owner for an admin author,
+agent otherwise; missing assertion defaults to stated.
+
+Publication validates the complete candidate vault before applying any file,
+persists preimages/progress, and writes a committed journal before cleanup.
+Recovery restores only files still matching the transaction's before/after
+images; later edits stop recovery explicitly. This is cooperative local
+recovery, not simultaneous-reader isolation or distributed atomicity.

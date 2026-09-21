@@ -1,23 +1,5 @@
 #!/usr/bin/env python3
-"""V4 Git-native transaction manager.
-
-Transactions provide:
-  - Stable transaction IDs and caller-supplied idempotency keys
-  - Optional expected-revision (Git SHA) check before commit
-  - Isolated staging under memory/_staging/<txn-id>/ before publication
-  - Markdown journal/receipt in memory/_transactions/<txn-id>.md
-  - Deterministic recovery from interrupted or failed transactions
-  - Idempotent replay: a committed key is a no-op
-
-Usage:
-  transact.py begin   --idempotency-key KEY [--expected-revision SHA] [--agent AGENT]
-  transact.py add     --txn-id TXNID --op OP --entity E --predicate P --value V
-                      [--source S] [--confidence C] [--reason TEXT]
-  transact.py commit  --txn-id TXNID [--yes]
-  transact.py rollback --txn-id TXNID
-  transact.py recover [--yes]
-  transact.py list
-"""
+"""Offline transactions: begin/add/commit/rollback/recover/list."""
 
 from __future__ import annotations
 
@@ -25,28 +7,20 @@ import argparse
 import datetime as dt
 import hashlib
 import re
-import secrets
 import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from typing import Any
 
 import yaml
 
-
-# ---------------------------------------------------------------------------
-# Constants
-# ---------------------------------------------------------------------------
-
-AGENT_ID_RE = re.compile(r"^agent-[a-z0-9-]+-[a-f0-9]{8,}$")
-TXN_ID_RE = re.compile(r"^txn-[a-z0-9][a-z0-9_-]*$")
-FRONTMATTER_RE = re.compile(r"^---\n(.*?)\n---\n?", re.DOTALL)
+from lint import AGENT_ID_RE, SLUG_RE, file_hash, parse_date, parse_datetime, split_frontmatter, validate
+from memory_model import FACT_FIELDS, confidence, current, enabled, enforce_trust, observed, parse_confidence, safe_path
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
+OPS = ("create_fact", "update_fact", "supersede_fact", "create_event", "archive_fact")
 
 
 def utc_now() -> dt.datetime:
@@ -57,550 +31,413 @@ def iso(value: dt.datetime) -> str:
     return value.isoformat().replace("+00:00", "Z")
 
 
-def slugify(text: str, limit: int = 40) -> str:
-    slug = re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")
-    return slug[:limit] or "txn"
+def slugify(value: str, limit: int = 24) -> str:
+    return re.sub(r"[^a-z0-9]+", "-", value.lower()).strip("-")[:limit] or "change"
 
 
-def new_txn_id(key: str) -> str:
-    stamp = utc_now().strftime("%Y%m%dT%H%M%SZ").lower()
-    suffix = secrets.token_hex(4)
-    slug = slugify(key, 24)
-    return f"txn-{slug}-{stamp}-{suffix}"
+def markdown(data: dict[str, Any], body: str = "") -> str:
+    return f"---\n{yaml.safe_dump(data, sort_keys=False, allow_unicode=True).strip()}\n---\n\n{body.rstrip()}\n"
 
 
-def normalize_agent(value: str | None) -> str:
-    if value and AGENT_ID_RE.match(value):
-        return value
-    base = slugify(value or "local", 30)
-    return f"agent-{base}-{secrets.token_hex(4)}"
-
-
-def file_hash(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return f"sha256:{digest.hexdigest()}"
-
-
-def split_frontmatter(path: Path) -> tuple[dict[str, Any], str]:
-    text = path.read_text(encoding="utf-8")
-    match = FRONTMATTER_RE.match(text)
-    if not match:
-        return {}, text
-    data = yaml.safe_load(match.group(1)) or {}
-    if not isinstance(data, dict):
-        return {}, text[match.end():]
-    return data, text[match.end():]
-
-
-def write_markdown(path: Path, frontmatter_data: dict[str, Any], body: str = "") -> None:
+def write_text(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    text = f"---\n{yaml.safe_dump(frontmatter_data, sort_keys=False, allow_unicode=True).strip()}\n---\n"
-    if body:
-        text += f"\n{body.rstrip()}\n"
-    else:
-        text += "\n"
     tmp = path.with_name(f".{path.name}.tmp")
     tmp.write_text(text, encoding="utf-8")
     tmp.replace(path)
 
 
-def confirm(prompt: str, assume_yes: bool) -> bool:
-    if assume_yes:
-        return True
-    answer = input(f"{prompt} [y/N] ")
-    return answer.lower() in {"y", "yes"}
+def write_markdown(path: Path, data: dict[str, Any], body: str = "") -> None:
+    write_text(path, markdown(data, body))
 
 
-# ---------------------------------------------------------------------------
-# Git helpers
-# ---------------------------------------------------------------------------
+def normalize_agent(value: str | None) -> str:
+    if value is None:
+        return "agent-local-1234abcd"
+    if not AGENT_ID_RE.fullmatch(value):
+        raise ValueError("agent must be a stable agent-name-<8hex> ID declared in roles.yaml")
+    return value
 
 
-def git_head(root: Path) -> str | None:
-    """Return the current HEAD SHA if Git is available, else None."""
-    try:
-        result = subprocess.run(
-            ["git", "rev-parse", "HEAD"],
-            cwd=root,
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-        if result.returncode == 0:
-            return result.stdout.strip()
-    except (FileNotFoundError, subprocess.TimeoutExpired):
-        pass
-    return None
+def staging_dir(root: Path, txn_id: str) -> Path:
+    if not re.fullmatch(r"txn-[a-z0-9][a-z0-9_-]*", txn_id):
+        raise ValueError(f"invalid transaction ID: {txn_id!r}")
+    return safe_path(root, f"memory/_staging/{txn_id}")
 
 
-def git_is_clean(root: Path) -> tuple[bool, str]:
-    """Return (is_clean, status_summary). Checks working tree against HEAD."""
-    try:
-        result = subprocess.run(
-            ["git", "status", "--porcelain", "--untracked-files=no"],
-            cwd=root,
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-        if result.returncode != 0:
-            return True, ""  # no git info, treat as clean
-        lines = [l for l in result.stdout.splitlines() if l.strip() and not l.startswith("??")]
-        return (len(lines) == 0), "\n".join(lines)
-    except (FileNotFoundError, subprocess.TimeoutExpired):
-        return True, ""
+def load_staging_meta(root: Path, txn_id: str) -> dict[str, Any]:
+    path = staging_dir(root, txn_id) / "_meta.yaml"
+    if not path.exists():
+        raise ValueError(f"transaction not found: {txn_id}")
+    data = yaml.safe_load(path.read_text(encoding="utf-8"))
+    if not isinstance(data, dict):
+        raise ValueError(f"invalid transaction metadata: {txn_id}")
+    return data
 
 
-# ---------------------------------------------------------------------------
-# Idempotency check
-# ---------------------------------------------------------------------------
+def save_staging_meta(root: Path, txn_id: str, meta: dict[str, Any]) -> None:
+    write_text(staging_dir(root, txn_id) / "_meta.yaml", yaml.safe_dump(meta, sort_keys=False))
 
 
-def find_committed_journal(root: Path, idempotency_key: str) -> Path | None:
-    """Return an existing committed journal with this key, or None."""
-    txn_dir = root / "memory/_transactions"
-    if not txn_dir.exists():
-        return None
-    for path in txn_dir.glob("*.md"):
+def find_committed_journal(root: Path, key: str) -> Path | None:
+    for path in sorted((root / "memory/_transactions").glob("*.md")):
         data, _ = split_frontmatter(path)
-        if (data.get("type") == "transaction"
-                and data.get("idempotency_key") == idempotency_key
-                and data.get("status") == "committed"):
+        if data.get("idempotency_key") == key and data.get("status") == "committed":
             return path
     return None
 
 
-# ---------------------------------------------------------------------------
-# Staging helpers
-# ---------------------------------------------------------------------------
+def git_head(root: Path) -> str | None:
+    try:
+        result = subprocess.run(["git", "rev-parse", "HEAD"], cwd=root, capture_output=True, text=True, timeout=5)
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return None
+    return result.stdout.strip() if result.returncode == 0 else None
 
 
-def staging_dir(root: Path, txn_id: str) -> Path:
-    return root / "memory/_staging" / txn_id
-
-
-def pending_marker(root: Path, txn_id: str) -> Path:
-    return staging_dir(root, txn_id) / ".pending"
-
-
-def load_staging_meta(root: Path, txn_id: str) -> dict[str, Any]:
-    meta_path = staging_dir(root, txn_id) / "_meta.yaml"
-    if not meta_path.exists():
-        return {}
-    return yaml.safe_load(meta_path.read_text(encoding="utf-8")) or {}
-
-
-def save_staging_meta(root: Path, txn_id: str, meta: dict[str, Any]) -> None:
-    staging = staging_dir(root, txn_id)
-    staging.mkdir(parents=True, exist_ok=True)
-    path = staging / "_meta.yaml"
-    path.write_text(yaml.safe_dump(meta, sort_keys=False, allow_unicode=True), encoding="utf-8")
-
-
-def write_journal(root: Path, txn_id: str, meta: dict[str, Any], status: str,
-                  failure_reason: str | None = None, committed_revision: str | None = None) -> None:
-    fm = {
-        "type": "transaction",
-        "transaction_id": txn_id,
-        "idempotency_key": meta.get("idempotency_key", ""),
-        "agent_id": meta.get("agent_id", ""),
-        "created_at": meta.get("created_at", iso(utc_now())),
-        "status": status,
-        "expected_revision": meta.get("expected_revision"),
-        "committed_revision": committed_revision,
-        "failure_reason": failure_reason,
-        "committed_at": iso(utc_now()) if status == "committed" else None,
-        "ops": meta.get("ops", []),
+def begin(root: Path, key: str, agent: str, expected_revision: str | None = None) -> dict[str, Any]:
+    if not key.strip():
+        raise ValueError("idempotency key must not be empty")
+    prior = find_committed_journal(root, key)
+    if prior:
+        data, _ = split_frontmatter(prior)
+        return data
+    for path in sorted((root / "memory/_staging").glob("*/_meta.yaml")):
+        data = load_staging_meta(root, path.parent.name)
+        if data.get("idempotency_key") == key:
+            if data.get("agent_id") != agent or data.get("expected_revision") != expected_revision:
+                raise ValueError("pending idempotency key belongs to a different agent/revision")
+            return data
+    suffix = hashlib.sha256(key.encode()).hexdigest()[:8]
+    txn_id = f"txn-{slugify(key)}-{utc_now().strftime('%Y%m%dt%H%M%Sz')}-{suffix}"
+    meta = {
+        "transaction_id": txn_id, "idempotency_key": key, "agent_id": normalize_agent(agent),
+        "created_at": iso(utc_now()), "expected_revision": expected_revision,
+        "status": "pending", "ops": [],
     }
-    n_ops = len(fm["ops"])
-    body = f"# Transaction: {txn_id}\n\n"
-    body += f"Status: **{status}**\n\n"
-    if status == "committed":
-        body += f"Applied {n_ops} operation(s) atomically.\n\n"
-        body += f"Idempotency key `{fm['idempotency_key']}` — replaying this key is a no-op while this journal exists.\n"
-    elif status == "rolled_back":
-        body += "Staging area cleared; no canonical files were modified.\n"
-    elif status == "failed":
-        body += f"Failure reason: {failure_reason}\n"
-    elif status == "idempotent_skip":
-        body += f"Skipped — idempotency key `{fm['idempotency_key']}` was already committed.\n"
-    journal_path = root / "memory/_transactions" / f"{txn_id}.md"
-    write_markdown(journal_path, fm, body)
+    save_staging_meta(root, txn_id, meta)
+    write_text(staging_dir(root, txn_id) / ".pending", "pending\n")
+    return meta
 
 
-# ---------------------------------------------------------------------------
-# Operations
-# ---------------------------------------------------------------------------
+def operation_arguments(parser: argparse.ArgumentParser, required: bool = True) -> None:
+    parser.add_argument("--op", required=required, choices=OPS)
+    for name in ("entity", "predicate", "value", "source", "valid-from", "valid-until",
+                 "valid-until-previous", "observed-at", "last-confirmed", "review-after",
+                 "event-id", "summary", "occurred-at", "body"):
+        parser.add_argument(f"--{name}")
+    parser.add_argument("--confidence", type=parse_confidence)
+    parser.add_argument("--assertion", choices=["stated", "inferred", "observed"])
+    parser.add_argument("--trust", choices=["owner", "agent", "external"])
+    parser.add_argument("--derived-from", action="append")
+    parser.add_argument("--entities", nargs="+")
+    parser.add_argument("--asserts", help="YAML list of structured event assertions")
+    parser.add_argument("--pinned", action=argparse.BooleanOptionalAction, default=None)
+    parser.add_argument("--reason", default="")
 
 
-def apply_staged_op(root: Path, staging: Path, op_desc: dict[str, Any]) -> str | None:
-    """Apply one staged operation to canonical memory/. Returns error string or None."""
-    op = op_desc.get("op")
-    target_path = op_desc.get("target_path")
-    if not target_path:
-        return f"op has no target_path: {op_desc!r}"
-
-    canonical_target = root / target_path
-
-    if op == "create_fact":
-        staged_file = staging / target_path
-        if not staged_file.exists():
-            return f"staged file not found: {staged_file}"
-        if canonical_target.exists():
-            return f"target already exists: {target_path}"
-        canonical_target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(str(staged_file), str(canonical_target))
-        return None
-
-    if op == "update_fact":
-        staged_file = staging / target_path
-        if not staged_file.exists():
-            return f"staged file not found: {staged_file}"
-        expected_hash = op_desc.get("precondition_hash")
-        if expected_hash:
-            if not canonical_target.exists():
-                return f"target does not exist for update: {target_path}"
-            actual = file_hash(canonical_target)
-            if actual != expected_hash:
-                return f"precondition hash mismatch on {target_path}: expected {expected_hash}, got {actual}"
-        canonical_target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(str(staged_file), str(canonical_target))
-        return None
-
-    if op == "archive_fact":
-        if not canonical_target.exists():
-            return f"target does not exist for archive: {target_path}"
-        archive_year = str(utc_now().year)
-        archive_dest = root / "memory/_archive" / archive_year / Path(target_path).relative_to("memory")
-        if archive_dest.exists():
-            return f"archive destination already exists: {archive_dest}"
-        archive_dest.parent.mkdir(parents=True, exist_ok=True)
-        shutil.move(str(canonical_target), str(archive_dest))
-        return None
-
-    return f"unsupported op {op!r}"
+def operation_from_args(args: argparse.Namespace) -> dict[str, Any]:
+    keys = ("op", "entity", "predicate", "value", "valid_until_previous", "event_id",
+            "summary", "occurred_at", "body", "entities", "reason", *FACT_FIELDS)
+    op = {key: getattr(args, key) for key in keys if getattr(args, key, None) is not None}
+    if getattr(args, "source", None):
+        op["sources"] = [args.source]
+    if getattr(args, "asserts", None):
+        op["asserts"] = yaml.safe_load(args.asserts)
+    return op
 
 
-# ---------------------------------------------------------------------------
-# Subcommands
-# ---------------------------------------------------------------------------
+def prepare_operations(root: Path, meta: dict[str, Any], reviewed: bool = False) -> dict[str, str | None]:
+    writes: dict[str, str | None] = {}
+    for index, op in enumerate(meta["ops"]):
+        kind = op.get("op")
+        if kind not in OPS:
+            raise ValueError(f"unsupported op: {kind!r}")
+        if kind == "create_event":
+            event_id = op.get("event_id")
+            if not event_id or not re.fullmatch(r"[a-z0-9][a-z0-9_-]*", event_id):
+                raise ValueError("create_event requires --event-id with a stable slug")
+            occurred = parse_datetime(op.get("occurred_at")).astimezone(dt.timezone.utc)
+            if not op.get("summary"):
+                raise ValueError("create_event requires --summary")
+            target = f"memory/events/{occurred.date()}/{event_id}.md"
+            if safe_path(root, target).exists() or target in writes:
+                raise ValueError(f"append-only event already exists: {target}")
+            data = {"type": "event", "id": event_id, "summary": op["summary"],
+                    "occurred_at": iso(occurred), "entities": op.get("entities", []),
+                    "sources": op.get("sources", [])}
+            if "asserts" in op:
+                data["asserts"] = op["asserts"]
+            writes[target] = markdown(data, op.get("body", ""))
+            continue
+        entity, predicate = op.get("entity"), op.get("predicate")
+        if not all(isinstance(v, str) and SLUG_RE.fullmatch(v) for v in (entity, predicate)):
+            raise ValueError("fact ops require slug --entity and --predicate")
+        target = f"memory/facts/{entity}/{predicate}.md"
+        canonical = safe_path(root, target)
+        if target in writes:
+            raise ValueError("one operation per fact slot per transaction; use consecutive transactions")
+        exists = canonical.exists()
+        if kind == "create_fact" and exists:
+            raise ValueError(f"target already exists: {target}; use supersede_fact")
+        if kind != "create_fact" and not exists:
+            raise ValueError(f"target does not exist: {target}")
+        if op.get("precondition_hash") and (not exists or file_hash(canonical) != op["precondition_hash"]):
+            raise ValueError(f"precondition hash mismatch on {target}")
+        old, body = split_frontmatter(canonical) if exists else ({}, "")
+        if kind == "archive_fact":
+            if enabled(root):
+                raise ValueError("v4.1 retains history; use supersede_fact, not archive_fact")
+            destination = f"memory/_archive/{utc_now().year}/facts/{entity}/{predicate}.md"
+            if safe_path(root, destination).exists():
+                raise ValueError(f"archive destination already exists: {destination}")
+            writes[destination], writes[target] = canonical.read_text(encoding="utf-8"), None
+            continue
+        if "value" not in op:
+            raise ValueError("fact ops require --value")
+        if kind == "update_fact" and enabled(root) and op["value"] != old.get("value"):
+            raise ValueError("changing a fact value requires supersede_fact to preserve history")
+        data = dict(old) if kind == "update_fact" else {
+            "type": "fact", "id": f"fact-{entity}-{predicate}",
+            "entity": entity, "predicate": predicate, "value": op["value"],
+            "valid_from": None, "valid_to": None, "recorded_at": meta["created_at"],
+            "sources": op.get("sources", []), "last_reviewed": str(meta["created_at"])[:10],
+        }
+        if kind == "supersede_fact":
+            if not enabled(root):
+                raise ValueError("supersede_fact requires spec_version: '4.1'")
+            start = parse_date(op.get("valid_from"))
+            if start is None or not current(old):
+                raise ValueError("supersede_fact requires --valid-from and a current fact")
+            end = parse_date(op.get("valid_until_previous")) or start
+            if abs((end - start).days) > 1:
+                raise ValueError("previous valid_until must equal valid_from (one-day tolerance)")
+            old_start = parse_date(old.get("valid_from"))
+            if old_start and (start < old_start or end < old_start):
+                raise ValueError("supersession cannot precede the previous valid_from")
+            date = old_start or observed(old).date()
+            base = f"memory/facts/{entity}/{predicate}/{date}"
+            history, collision = f"{base}.md", 1
+            while safe_path(root, history).exists() or history in writes:
+                collision += 1
+                history = f"{base}-{collision}.md"
+            previous = dict(old, valid_until=end.isoformat())
+            previous["valid_to"] = None
+            writes[history] = markdown(previous, body)
+            data["valid_until"] = None
+            data["supersedes"] = history
+            data["id"] = f"fact-{entity}-{predicate}-{start}-{hashlib.sha256((meta['transaction_id'] + str(index)).encode()).hexdigest()[:8]}"
+        for field in (*FACT_FIELDS, "sources"):
+            if field in op:
+                data[field] = op[field]
+        if enabled(root):
+            data["agent_id"] = meta["agent_id"]
+            confidence(data.get("confidence"))
+            enforce_trust(root, data, meta["agent_id"], reviewed)
+        else:
+            data.setdefault("confidence", "medium")
+        writes[target] = markdown(data, op.get("body", body if kind == "update_fact" else ""))
+    return writes
+
+
+def validate_candidate(root: Path, writes: dict[str, str | None]) -> None:
+    with tempfile.TemporaryDirectory(prefix="memory-candidate-") as tmp:
+        candidate = Path(tmp)
+        for folder in ("memory", "sources"):
+            if (root / folder).exists():
+                shutil.copytree(root / folder, candidate / folder,
+                                ignore=shutil.ignore_patterns("_staging", "_views", "_indexes"))
+        for relative, content in writes.items():
+            path = candidate / relative
+            if content is None:
+                path.unlink()
+            else:
+                write_text(path, content)
+        errors = [str(f) for f in validate(candidate) if f.level == "ERROR"]
+        if errors:
+            raise ValueError("candidate vault failed lint:\n" + "\n".join(errors))
+
+
+def write_journal(root: Path, meta: dict[str, Any], status: str, reason: str | None = None) -> None:
+    data = {key: meta.get(key) for key in ("transaction_id", "idempotency_key", "agent_id", "created_at",
+                                          "expected_revision", "ops")}
+    data.update(type="transaction", status=status, failure_reason=reason,
+                committed_revision=git_head(root), committed_at=iso(utc_now()) if status == "committed" else None)
+    write_markdown(root / "memory/_transactions" / f"{meta['transaction_id']}.md", data,
+                   f"# Transaction: {meta['transaction_id']}\n\nStatus: **{status}**")
+
+
+def restore(root: Path, meta: dict[str, Any]) -> None:
+    staging = staging_dir(root, meta["transaction_id"])
+    paths = list(dict.fromkeys([*meta.get("applied", []), *([meta["inflight"]] if meta.get("inflight") else [])]))
+    for relative in reversed(paths):
+        target = safe_path(root, relative)
+        before = staging / "_before" / relative
+        expected_before = meta["before"][relative]
+        actual = file_hash(target) if target.exists() else None
+        if actual not in (expected_before, meta["after"][relative]):
+            raise ValueError(f"recovery refuses to overwrite a later edit: {relative}; staging retained")
+        if actual == expected_before:
+            continue
+        if before.exists():
+            write_text(target, before.read_text(encoding="utf-8"))
+        elif target.exists():
+            target.unlink()
+
+
+def publish(root: Path, meta: dict[str, Any], writes: dict[str, str | None]) -> None:
+    """Durable preimages and progress make partial publication recoverable."""
+    staging = staging_dir(root, meta["transaction_id"])
+    meta.update(status="prepared", before={}, after={}, applied=[], inflight=None)
+    for relative, content in writes.items():
+        target = safe_path(root, relative, ("memory/",))
+        meta["before"][relative] = file_hash(target) if target.exists() else None
+        if target.exists():
+            backup = staging / "_before" / relative
+            backup.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(target, backup)
+        if content is not None:
+            write_text(staging / relative, content)
+            meta["after"][relative] = file_hash(staging / relative)
+        else:
+            meta["after"][relative] = None
+    save_staging_meta(root, meta["transaction_id"], meta)
+    try:
+        for relative, content in writes.items():
+            target = safe_path(root, relative)
+            actual = file_hash(target) if target.exists() else None
+            if actual != meta["before"][relative]:
+                raise ValueError(f"concurrent edit before publication: {relative}")
+            meta["inflight"] = relative
+            save_staging_meta(root, meta["transaction_id"], meta)
+            if content is None:
+                target.unlink()
+            else:
+                write_text(target, content)
+            meta["applied"].append(relative)
+            meta["inflight"] = None
+            save_staging_meta(root, meta["transaction_id"], meta)
+        write_journal(root, meta, "committed")
+    except (OSError, ValueError) as exc:
+        restore(root, meta)
+        write_journal(root, meta, "failed", str(exc))
+        shutil.rmtree(staging)
+        raise
+    shutil.rmtree(staging)
+
+
+def commit_records(root: Path, key: str, agent: str, writes: dict[str, str]) -> str:
+    """Proposal/review metadata uses the same journal and recovery path."""
+    for relative in writes:
+        safe_path(root, relative, ("memory/_proposals/", "memory/_reviews/"))
+    meta = begin(root, key, agent)
+    if meta["status"] != "committed":
+        meta["ops"] = [{"op": "record_review_state", "target_path": path} for path in sorted(writes)]
+        publish(root, meta, writes)
+    return meta["transaction_id"]
 
 
 def cmd_begin(root: Path, args: argparse.Namespace) -> int:
-    key = args.idempotency_key
-    existing = find_committed_journal(root, key)
-    if existing:
-        print(f"Idempotent skip: key '{key}' already committed in {existing}")
-        return 0
-
-    txn_id = new_txn_id(key)
-    meta: dict[str, Any] = {
-        "transaction_id": txn_id,
-        "idempotency_key": key,
-        "agent_id": normalize_agent(getattr(args, "agent", None)),
-        "created_at": iso(utc_now()),
-        "expected_revision": getattr(args, "expected_revision", None),
-        "status": "pending",
-        "ops": [],
-    }
-    staging = staging_dir(root, txn_id)
-    staging.mkdir(parents=True, exist_ok=True)
-    pending_marker(root, txn_id).write_text("pending\n", encoding="utf-8")
-    save_staging_meta(root, txn_id, meta)
-    print(f"Transaction started: {txn_id}")
-    print(f"  idempotency_key: {key}")
-    print(f"  staging: {staging.relative_to(root)}")
+    meta = begin(root, args.idempotency_key, normalize_agent(args.agent), args.expected_revision)
+    label = "Idempotent skip" if meta["status"] == "committed" else "Transaction started"
+    print(f"{label}: {meta['transaction_id']}")
     return 0
 
 
 def cmd_add(root: Path, args: argparse.Namespace) -> int:
-    txn_id = args.txn_id
-    meta = load_staging_meta(root, txn_id)
-    if not meta:
-        print(f"ERROR: transaction not found: {txn_id}", file=sys.stderr)
-        return 1
-    if meta.get("status") != "pending":
-        print(f"ERROR: transaction {txn_id} is not pending (status={meta.get('status')})", file=sys.stderr)
-        return 1
+    meta = load_staging_meta(root, args.txn_id)
+    if meta["status"] != "pending":
+        raise ValueError("transaction is not pending; recover before retrying")
+    op = operation_from_args(args)
+    if op["op"] in {"update_fact", "supersede_fact", "archive_fact"}:
+        target = safe_path(root, f"memory/facts/{op.get('entity')}/{op.get('predicate')}.md")
+        if target.exists():
+            op["precondition_hash"] = file_hash(target)
+    meta["ops"].append(op)
+    # Trust is enforced at commit too, using the current policy.
+    prepare_operations(root, meta, reviewed=True)
+    save_staging_meta(root, args.txn_id, meta)
+    print(f"Added {op['op']}: {op.get('entity', op.get('event_id', ''))}/{op.get('predicate', '')}")
+    return 0
 
-    op = args.op
-    entity = getattr(args, "entity", None)
-    predicate = getattr(args, "predicate", None)
-    value = getattr(args, "value", None)
-    source = getattr(args, "source", None)
-    confidence = getattr(args, "confidence", "medium")
-    reason = getattr(args, "reason", "")
 
-    if op in {"create_fact", "update_fact"}:
-        if not all([entity, predicate, value]):
-            print("ERROR: --entity, --predicate, and --value are required for fact ops", file=sys.stderr)
-            return 1
-        target_path = f"memory/facts/{entity}/{predicate}.md"
-        now_str = iso(utc_now())
-        payload_fm: dict[str, Any] = {
-            "type": "fact",
-            "id": f"fact-{entity}-{predicate}",
-            "entity": entity,
-            "predicate": predicate,
-            "value": value,
-            "valid_from": None,
-            "valid_to": None,
-            "recorded_at": now_str,
-            "confidence": confidence,
-            "sources": [source] if source else [],
-            "last_reviewed": now_str[:10],
-        }
-        precondition_hash = None
-        if op == "update_fact":
-            canonical = root / target_path
-            if canonical.exists():
-                precondition_hash = file_hash(canonical)
-        # Write staged file
-        staged_path = staging_dir(root, txn_id) / target_path
-        write_markdown(staged_path, payload_fm)
-        op_desc: dict[str, Any] = {
-            "op": op,
-            "entity": entity,
-            "predicate": predicate,
-            "value": value,
-            "target_path": target_path,
-        }
-        if precondition_hash:
-            op_desc["precondition_hash"] = precondition_hash
-        meta["ops"].append(op_desc)
-        save_staging_meta(root, txn_id, meta)
-        print(f"Added {op}: {target_path}")
-        return 0
-
-    print(f"ERROR: unsupported op {op!r} for 'add'", file=sys.stderr)
-    return 1
+def commit(root: Path, meta: dict[str, Any], reviewed: bool = False) -> None:
+    if meta["status"] != "pending":
+        raise ValueError("transaction is not pending")
+    if find_committed_journal(root, meta["idempotency_key"]):
+        shutil.rmtree(staging_dir(root, meta["transaction_id"]))
+        return
+    expected = meta.get("expected_revision")
+    if expected and git_head(root) != expected:
+        raise ValueError("Git revision mismatch or Git unavailable")
+    if not meta["ops"]:
+        raise ValueError("cannot commit an empty transaction")
+    writes = prepare_operations(root, meta, reviewed)
+    validate_candidate(root, writes)
+    publish(root, meta, writes)
 
 
 def cmd_commit(root: Path, args: argparse.Namespace) -> int:
-    txn_id = args.txn_id
+    meta = load_staging_meta(root, args.txn_id)
+    if not args.yes and input(f"Commit {args.txn_id}? [y/N] ").lower() not in {"y", "yes"}:
+        print("Cancelled.", file=sys.stderr)
+        return 1
+    commit(root, meta)
+    print(f"Transaction {args.txn_id} committed ({len(meta['ops'])} op(s))")
+    return 0
+
+
+def rollback(root: Path, txn_id: str) -> None:
     meta = load_staging_meta(root, txn_id)
-    if not meta:
-        print(f"ERROR: transaction not found: {txn_id}", file=sys.stderr)
-        return 1
-    if meta.get("status") != "pending":
-        print(f"ERROR: transaction {txn_id} is not pending (status={meta.get('status')})", file=sys.stderr)
-        return 1
-
-    # Idempotency guard
-    existing = find_committed_journal(root, meta["idempotency_key"])
-    if existing:
-        print(f"Idempotent skip: key '{meta['idempotency_key']}' already committed in {existing}")
-        # clean up staging
-        shutil.rmtree(str(staging_dir(root, txn_id)), ignore_errors=True)
-        return 0
-
-    # Expected revision check
-    expected_revision = meta.get("expected_revision")
-    committed_revision: str | None = None
-    if expected_revision:
-        current = git_head(root)
-        if current is None:
-            print("ERROR: expected_revision provided but Git is not available", file=sys.stderr)
-            write_journal(root, txn_id, meta, "failed",
-                          failure_reason="expected_revision provided but Git unavailable")
-            shutil.rmtree(str(staging_dir(root, txn_id)), ignore_errors=True)
-            return 1
-        if current != expected_revision:
-            msg = f"Git revision mismatch: expected {expected_revision}, current HEAD is {current}"
-            print(f"ERROR: {msg}", file=sys.stderr)
-            write_journal(root, txn_id, meta, "failed", failure_reason=msg)
-            shutil.rmtree(str(staging_dir(root, txn_id)), ignore_errors=True)
-            return 1
-        committed_revision = current
-    else:
-        committed_revision = git_head(root)  # record current rev even if not checked
-
-    ops = meta.get("ops", [])
-    if not ops:
-        print("WARNING: no operations in transaction — committing empty transaction")
-
-    assume_yes = getattr(args, "yes", False)
-    if not confirm(f"Commit transaction {txn_id} ({len(ops)} op(s))?", assume_yes):
-        return 0
-
-    staging = staging_dir(root, txn_id)
-
-    # Apply all operations atomically (best-effort: on first error, roll back applied)
-    applied: list[str] = []
-    error: str | None = None
-    for op_desc in ops:
-        err = apply_staged_op(root, staging, op_desc)
-        if err:
-            error = err
-            break
-        applied.append(op_desc.get("target_path", "?"))
-
-    if error:
-        # Rollback what we applied
-        print(f"ERROR during commit: {error}", file=sys.stderr)
-        print("Rolling back applied operations...", file=sys.stderr)
-        for target_path in reversed(applied):
-            target = root / target_path
-            if target.exists():
-                target.unlink()
-                print(f"  Rolled back: {target_path}", file=sys.stderr)
-        write_journal(root, txn_id, meta, "failed", failure_reason=error)
-        shutil.rmtree(str(staging_dir(root, txn_id)), ignore_errors=True)
-        return 1
-
-    write_journal(root, txn_id, meta, "committed", committed_revision=committed_revision)
-    shutil.rmtree(str(staging_dir(root, txn_id)), ignore_errors=True)
-    print(f"Transaction {txn_id} committed ({len(ops)} op(s))")
-    for target_path in [op_desc.get("target_path", "?") for op_desc in ops]:
-        print(f"  Applied: {target_path}")
-    return 0
-
-
-def cmd_rollback(root: Path, args: argparse.Namespace) -> int:
-    txn_id = args.txn_id
-    meta = load_staging_meta(root, txn_id)
-    if not meta:
-        # Check if there's a staging directory without meta
-        staging = staging_dir(root, txn_id)
-        if staging.exists():
-            shutil.rmtree(str(staging))
-            print(f"Cleared staging directory for {txn_id} (no meta found)")
-            return 0
-        print(f"ERROR: transaction not found: {txn_id}", file=sys.stderr)
-        return 1
-    write_journal(root, txn_id, meta, "rolled_back")
-    shutil.rmtree(str(staging_dir(root, txn_id)), ignore_errors=True)
-    print(f"Transaction {txn_id} rolled back")
-    return 0
-
-
-def cmd_recover(root: Path, args: argparse.Namespace) -> int:
-    """Find any pending staging transactions and roll them back (safe recovery)."""
-    staging_base = root / "memory/_staging"
-    if not staging_base.exists():
-        print("No pending transactions found.")
-        return 0
-    assume_yes = getattr(args, "yes", False)
-    found = False
-    for txn_dir in sorted(staging_base.iterdir()):
-        if not txn_dir.is_dir():
-            continue
-        marker = txn_dir / ".pending"
-        if not marker.exists():
-            continue
-        txn_id = txn_dir.name
-        found = True
-        print(f"Found pending transaction: {txn_id}")
-        meta = load_staging_meta(root, txn_id)
-        if confirm(f"  Roll back {txn_id}?", assume_yes):
-            write_journal(root, txn_id, meta or {"transaction_id": txn_id}, "rolled_back",
-                          failure_reason="recovered from interrupted state")
-            shutil.rmtree(str(txn_dir), ignore_errors=True)
-            print(f"  Rolled back: {txn_id}")
-        else:
-            print(f"  Skipped: {txn_id}")
-    if not found:
-        print("No pending transactions found.")
-    return 0
-
-
-def cmd_list(root: Path, args: argparse.Namespace) -> int:
-    txn_dir = root / "memory/_transactions"
-    staging_base = root / "memory/_staging"
-    rows: list[tuple[str, str, str, str]] = []
-
-    if txn_dir.exists():
-        for path in sorted(txn_dir.glob("*.md")):
-            data, _ = split_frontmatter(path)
-            if data.get("type") == "transaction":
-                rows.append((
-                    str(data.get("created_at", "")),
-                    str(data.get("transaction_id", path.stem)),
-                    str(data.get("status", "?")),
-                    str(data.get("idempotency_key", "")),
-                ))
-    if staging_base.exists():
-        for d in sorted(staging_base.iterdir()):
-            if d.is_dir() and (d / ".pending").exists():
-                meta = load_staging_meta(root, d.name)
-                rows.append((
-                    str(meta.get("created_at", "")),
-                    d.name,
-                    "PENDING (staging)",
-                    str(meta.get("idempotency_key", "")),
-                ))
-
-    if not rows:
-        print("No transactions found.")
-        return 0
-    rows.sort(key=lambda r: r[0], reverse=True)
-    for created_at, txn_id, status, key in rows:
-        print(f"{created_at[:19]}  {status:<22}  {txn_id}  [{key}]")
-    return 0
-
-
-# ---------------------------------------------------------------------------
-# CLI
-# ---------------------------------------------------------------------------
-
-
-def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    sub = parser.add_subparsers(dest="command")
-
-    p_begin = sub.add_parser("begin", help="Start a new transaction")
-    p_begin.add_argument("--idempotency-key", required=True, help="Stable caller-supplied deduplication key")
-    p_begin.add_argument("--expected-revision", default=None, help="Git SHA that HEAD must match before commit")
-    p_begin.add_argument("--agent", default=None, help="Agent ID (agent-name-<8hex>)")
-
-    p_add = sub.add_parser("add", help="Add an operation to a pending transaction")
-    p_add.add_argument("--txn-id", required=True)
-    p_add.add_argument("--op", required=True, choices=["create_fact", "update_fact", "archive_fact"])
-    p_add.add_argument("--entity", default=None)
-    p_add.add_argument("--predicate", default=None)
-    p_add.add_argument("--value", default=None)
-    p_add.add_argument("--source", default=None)
-    p_add.add_argument("--confidence", default="medium", choices=["high", "medium", "low"])
-    p_add.add_argument("--reason", default="")
-
-    p_commit = sub.add_parser("commit", help="Commit a pending transaction")
-    p_commit.add_argument("--txn-id", required=True)
-    p_commit.add_argument("--yes", action="store_true")
-
-    p_rollback = sub.add_parser("rollback", help="Roll back a pending transaction")
-    p_rollback.add_argument("--txn-id", required=True)
-
-    p_recover = sub.add_parser("recover", help="Roll back any pending staged transactions")
-    p_recover.add_argument("--yes", action="store_true")
-
-    sub.add_parser("list", help="List all transactions")
-
-    return parser
+    journal = root / "memory/_transactions" / f"{txn_id}.md"
+    if journal.exists() and split_frontmatter(journal)[0].get("status") == "committed":
+        shutil.rmtree(staging_dir(root, txn_id))
+        return
+    restore(root, meta)
+    write_journal(root, meta, "rolled_back")
+    shutil.rmtree(staging_dir(root, txn_id))
 
 
 def main() -> int:
-    parser = build_parser()
+    parser = argparse.ArgumentParser(description=__doc__)
+    sub = parser.add_subparsers(dest="command", required=True)
+    p = sub.add_parser("begin")
+    p.add_argument("--idempotency-key", required=True)
+    p.add_argument("--agent", default=None)
+    p.add_argument("--expected-revision")
+    p = sub.add_parser("add")
+    p.add_argument("--txn-id", required=True)
+    operation_arguments(p)
+    p = sub.add_parser("commit")
+    p.add_argument("--txn-id", required=True)
+    p.add_argument("--yes", action="store_true")
+    p = sub.add_parser("rollback")
+    p.add_argument("--txn-id", required=True)
+    p = sub.add_parser("recover")
+    p.add_argument("--yes", action="store_true")
+    sub.add_parser("list")
     args = parser.parse_args()
     root = Path.cwd()
-
-    if args.command == "begin":
-        return cmd_begin(root, args)
-    if args.command == "add":
-        return cmd_add(root, args)
-    if args.command == "commit":
-        return cmd_commit(root, args)
-    if args.command == "rollback":
-        return cmd_rollback(root, args)
-    if args.command == "recover":
-        return cmd_recover(root, args)
-    if args.command == "list":
-        return cmd_list(root, args)
-
-    parser.print_help()
-    return 1
+    try:
+        if args.command in {"begin", "add", "commit"}:
+            return {"begin": cmd_begin, "add": cmd_add, "commit": cmd_commit}[args.command](root, args)
+        if args.command == "rollback":
+            rollback(root, args.txn_id)
+            print(f"Transaction {args.txn_id} rolled back")
+        elif args.command == "recover":
+            for path in sorted((root / "memory/_staging").glob("*/.pending")):
+                if args.yes or input(f"Roll back {path.parent.name}? [y/N] ").lower() in {"y", "yes"}:
+                    rollback(root, path.parent.name)
+                    print(f"Recovered: {path.parent.name}")
+        else:
+            for path in sorted((root / "memory/_transactions").glob("*.md")):
+                data, _ = split_frontmatter(path)
+                print(f"{data.get('status')}  {data.get('transaction_id')}  [{data.get('idempotency_key')}]")
+            for path in sorted((root / "memory/_staging").glob("*/_meta.yaml")):
+                print(f"pending  {path.parent.name}")
+        return 0
+    except (OSError, ValueError, yaml.YAMLError) as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":

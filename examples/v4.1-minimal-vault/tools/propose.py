@@ -1,388 +1,229 @@
 #!/usr/bin/env python3
-"""V4 proposal management tool.
-
-Creates and manages formal proposals for changes to vault facts. Each proposal
-goes through the review lifecycle before being applied via a transaction.
-
-Usage:
-  propose.py create  --title TITLE --namespace NS --proposer AGENT
-                     --op OP --entity E --predicate P --value V
-                     [--source S] [--confidence C]
-  propose.py list    [--status STATUS]
-  propose.py show    --proposal-id PROPID
-  propose.py apply   --proposal-id PROPID [--yes]
-"""
+"""Create/list/show/apply review-gated proposals. Application uses transact.py."""
 
 from __future__ import annotations
 
 import argparse
-import datetime as dt
 import hashlib
-import re
-import secrets
 import sys
 from pathlib import Path
 from typing import Any
 
 import yaml
 
-
-AGENT_ID_RE = re.compile(r"^agent-[a-z0-9-]+-[a-f0-9]{8,}$")
-PROP_ID_RE = re.compile(r"^prop-[a-z0-9][a-z0-9_-]*$")
-FRONTMATTER_RE = re.compile(r"^---\n(.*?)\n---\n?", re.DOTALL)
-
-VALID_STATUSES = {"draft", "proposed", "changes_requested", "approved", "rejected", "conflict", "applied"}
+import transact
+from lint import file_hash, split_frontmatter
+from memory_model import config, enforce_trust, safe_path
+from transact import iso, normalize_agent, utc_now, write_markdown
 
 
-def utc_now() -> dt.datetime:
-    return dt.datetime.now(dt.timezone.utc)
+VALID_STATUSES = ("draft", "proposed", "changes_requested", "approved", "rejected", "conflict", "applied")
+CONSOLIDATOR = "agent-consolidate-00000001"
 
 
-def iso(value: dt.datetime) -> str:
-    return value.isoformat().replace("+00:00", "Z")
-
-
-def slugify(text: str, limit: int = 40) -> str:
-    slug = re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")
-    return slug[:limit] or "prop"
-
-
-def normalize_agent(value: str | None) -> str:
-    if value and AGENT_ID_RE.match(value):
-        return value
-    base = slugify(value or "local", 30)
-    return f"agent-{base}-{secrets.token_hex(4)}"
-
-
-def new_prop_id(title: str) -> str:
-    stamp = utc_now().strftime("%Y%m%dT%H%M%SZ").lower()
-    slug = slugify(title, 20)
-    suffix = secrets.token_hex(4)
-    return f"prop-{slug}-{stamp}-{suffix}"
-
-
-def split_frontmatter(path: Path) -> tuple[dict[str, Any], str]:
-    text = path.read_text(encoding="utf-8")
-    match = FRONTMATTER_RE.match(text)
-    if not match:
-        return {}, text
-    data = yaml.safe_load(match.group(1)) or {}
-    if not isinstance(data, dict):
-        return {}, text[match.end():]
-    return data, text[match.end():]
-
-
-def write_markdown(path: Path, fm: dict[str, Any], body: str = "") -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    text = f"---\n{yaml.safe_dump(fm, sort_keys=False, allow_unicode=True).strip()}\n---\n"
-    if body:
-        text += f"\n{body.rstrip()}\n"
-    else:
-        text += "\n"
-    tmp = path.with_name(f".{path.name}.tmp")
-    tmp.write_text(text, encoding="utf-8")
-    tmp.replace(path)
-
-
-def content_hash_of(fm: dict[str, Any]) -> str:
-    """Stable hash of proposal ops and title for cryptographic binding."""
-    canonical = yaml.safe_dump({
-        "title": fm.get("title", ""),
-        "namespace": fm.get("namespace", ""),
-        "ops": fm.get("ops", []),
-    }, sort_keys=True, allow_unicode=True)
-    return "sha256:" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+def content_hash_of(data: dict[str, Any]) -> str:
+    fields = ("title", "namespace", "ops")
+    if data.get("hash_version") == "4.1":
+        fields += ("proposer_id",)
+    text = yaml.safe_dump({key: data.get(key, "") for key in fields}, sort_keys=True, allow_unicode=True)
+    return "sha256:" + hashlib.sha256(text.encode()).hexdigest()
 
 
 def load_roles(root: Path) -> dict[str, Any]:
-    path = root / "memory/schema/roles.yaml"
-    if not path.exists():
-        return {}
-    return yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    return config(root, "roles.yaml")
 
 
-def check_proposer_allowed(roles: dict[str, Any], namespace: str, proposer_id: str) -> str | None:
-    """Return error string or None."""
-    namespaces = {ns["id"]: ns for ns in roles.get("namespaces", []) if isinstance(ns, dict)}
-    if not namespaces:
-        return None  # no policy configured
-    if namespace not in namespaces:
-        return f"unknown namespace {namespace!r}"
-    ns = namespaces[namespace]
-    allowed = ns.get("allowed_proposers", [])
-    if not allowed:
+def check_proposer_allowed(roles: dict[str, Any], namespace: str, proposer: str) -> str | None:
+    if not roles:
         return None
-    # Check admin role
-    for agent in roles.get("agents", []):
-        if isinstance(agent, dict) and agent.get("id") == proposer_id:
-            if "admin" in agent.get("roles", []):
-                return None
-    if proposer_id not in allowed:
-        return f"proposer {proposer_id!r} is not allowed in namespace {namespace!r}"
+    ns = next((entry for entry in roles.get("namespaces", []) if entry.get("id") == namespace), None)
+    if ns is None:
+        return f"unknown namespace {namespace!r}"
+    admin = any(a.get("id") == proposer and "admin" in a.get("roles", []) for a in roles.get("agents", []))
+    if ns.get("allowed_proposers") and proposer not in ns["allowed_proposers"] and not admin:
+        return f"proposer {proposer!r} is not allowed in namespace {namespace!r}"
     return None
 
 
-def cmd_create(root: Path, args: argparse.Namespace) -> int:
-    roles = load_roles(root)
-    proposer_id = normalize_agent(args.proposer)
-    namespace = args.namespace
-
-    # Policy check
-    err = check_proposer_allowed(roles, namespace, proposer_id)
-    if err:
-        print(f"ERROR: {err}", file=sys.stderr)
-        return 1
-
-    op = args.op
-    entity = getattr(args, "entity", None)
-    predicate = getattr(args, "predicate", None)
-    value = getattr(args, "value", None)
-    source = getattr(args, "source", None)
-    confidence = getattr(args, "confidence", "medium")
-
-    if op in {"create_fact", "update_fact"} and not all([entity, predicate, value]):
-        print("ERROR: --entity, --predicate, and --value are required for fact ops", file=sys.stderr)
-        return 1
-
-    op_desc: dict[str, Any] = {"op": op}
-    if entity:
-        op_desc["entity"] = entity
-    if predicate:
-        op_desc["predicate"] = predicate
-    if value:
-        op_desc["value"] = value
-    if entity and predicate:
-        op_desc["target_path"] = f"memory/facts/{entity}/{predicate}.md"
-    if source:
-        op_desc["sources"] = [source]
-    if confidence:
-        op_desc["confidence"] = confidence
-
-    prop_id = new_prop_id(args.title)
-    fm: dict[str, Any] = {
-        "type": "proposal",
-        "proposal_id": prop_id,
-        "namespace": namespace,
-        "proposer_id": proposer_id,
-        "title": args.title,
-        "status": "proposed",
-        "created_at": iso(utc_now()),
-        "ops": [op_desc],
-        "required_approvals": _required_approvals(roles, namespace),
-        "approvals": [],
-        "applied_at": None,
-        "transaction_id": None,
-        "rejection_reason": None,
-    }
-    fm["content_hash"] = content_hash_of(fm)
-
-    body = f"# Proposal: {args.title}\n\nNamespace: `{namespace}` | Proposer: `{proposer_id}`\n\n"
-    body += f"Operations:\n"
-    for od in fm["ops"]:
-        body += f"  - `{od.get('op')}` → `{od.get('target_path', 'n/a')}`\n"
-    body += "\nThis proposal requires review before it can be applied.\n"
-
-    prop_path = root / "memory/_proposals" / f"{prop_id}.md"
-    write_markdown(prop_path, fm, body)
-    print(f"Proposal created: {prop_id}")
-    print(f"  title: {args.title}")
-    print(f"  namespace: {namespace}")
-    print(f"  path: {prop_path.relative_to(root)}")
-    print(f"  required_approvals: {fm['required_approvals']}")
-    return 0
-
-
 def _required_approvals(roles: dict[str, Any], namespace: str) -> int:
-    for ns in roles.get("namespaces", []):
-        if isinstance(ns, dict) and ns.get("id") == namespace:
-            return int(ns.get("required_approvals", 1))
-    return 1
+    ns = next((entry for entry in roles.get("namespaces", []) if entry.get("id") == namespace), {})
+    value = ns.get("required_approvals", 1)
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise ValueError("required_approvals must be an integer >= 1")
+    return value
 
 
-def cmd_list(root: Path, args: argparse.Namespace) -> int:
-    prop_dir = root / "memory/_proposals"
-    if not prop_dir.exists():
-        print("No proposals found.")
-        return 0
-    status_filter = getattr(args, "status", None)
-    rows = []
-    for path in sorted(prop_dir.glob("*.md")):
-        data, _ = split_frontmatter(path)
-        if data.get("type") != "proposal":
+def load_proposal(root: Path, prop_id: str) -> tuple[Path, dict[str, Any]]:
+    path = safe_path(root, f"memory/_proposals/{prop_id}.md")
+    if not path.is_file():
+        raise ValueError(f"proposal not found: {prop_id}")
+    data, _ = split_frontmatter(path)
+    if data.get("proposal_id") != prop_id:
+        raise ValueError("proposal ID does not match filename")
+    return path, data
+
+
+def valid_approvals(root: Path, data: dict[str, Any]) -> list[str]:
+    from review import check_reviewer_allowed
+
+    if data.get("content_hash") != content_hash_of(data):
+        raise ValueError("proposal content_hash does not match its contents; review again")
+    latest: dict[str, dict[str, Any]] = {}
+    records = []
+    for path in sorted((root / "memory/_reviews").glob("*.md")):
+        review, _ = split_frontmatter(path)
+        if review.get("proposal_id") == data["proposal_id"]:
+            records.append((path, review))
+    for _, review in sorted(records, key=lambda row: (str(row[1].get("created_at", "")), row[0].name)):
+        if review.get("proposal_content_hash") == data["content_hash"]:
+            latest[review.get("reviewer_id", "")] = review
+    allowed = []
+    roles = load_roles(root)
+    for reviewer, review in latest.items():
+        if reviewer == data.get("proposer_id"):
+            raise ValueError("self-approval not allowed")
+        if check_reviewer_allowed(roles, data["namespace"], reviewer):
             continue
-        if status_filter and data.get("status") != status_filter:
-            continue
-        rows.append(data)
-    if not rows:
-        print("No proposals found.")
-        return 0
-    for d in sorted(rows, key=lambda r: str(r.get("created_at", "")), reverse=True):
-        print(f"{str(d.get('created_at', ''))[:19]}  {d.get('status'):<20}  {d.get('proposal_id')}  \"{d.get('title')}\"")
+        if review.get("verdict") == "approved":
+            allowed.append(reviewer)
+        elif review.get("verdict") in {"rejected", "changes_requested"}:
+            raise ValueError("proposal has an unresolved rejection or change request")
+    return sorted(allowed)
+
+
+def create_proposal(root: Path, title: str, namespace: str, proposer: str,
+                    ops: list[dict[str, Any]], status: str = "proposed",
+                    key: str | None = None, diagnosis: dict[str, Any] | None = None) -> dict[str, Any]:
+    roles = load_roles(root)
+    diagnostic = proposer == CONSOLIDATOR and status == "draft" and not ops and diagnosis is not None
+    error = check_proposer_allowed(roles, namespace, proposer)
+    if error and not diagnostic:
+        raise ValueError(error)
+    if not diagnostic and not ops:
+        raise ValueError("proposal requires at least one operation")
+    if not isinstance(ops, list) or any(not isinstance(op, dict) or op.get("op") not in transact.OPS for op in ops):
+        raise ValueError("ops must be a list of supported operation objects")
+    if any(op["op"] != "create_event" for op in ops) and namespace != "facts":
+        raise ValueError("fact operations must use namespace facts")
+    if key:
+        for path in sorted((root / "memory/_proposals").glob("*.md")):
+            data, _ = split_frontmatter(path)
+            if data.get("idempotency_key") == key:
+                return data
+    stamp = utc_now().strftime("%Y%m%dt%H%M%Sz")
+    suffix = hashlib.sha256((key or title + iso(utc_now())).encode()).hexdigest()[:8]
+    prop_id = f"prop-{transact.slugify(title, 20)}-{stamp}-{suffix}"
+    for op in ops:
+        if op["op"] in {"update_fact", "supersede_fact", "archive_fact"}:
+            target = safe_path(root, f"memory/facts/{op.get('entity')}/{op.get('predicate')}.md")
+            if not target.is_file():
+                raise ValueError(f"target does not exist: {target.relative_to(root)}")
+            op.setdefault("precondition_hash", file_hash(target))
+    data = {
+        "type": "proposal", "proposal_id": prop_id, "namespace": namespace,
+        "proposer_id": normalize_agent(proposer), "title": title, "status": status,
+        "created_at": iso(utc_now()), "hash_version": "4.1", "ops": ops,
+        "required_approvals": _required_approvals(roles, namespace), "approvals": [],
+        "applied_at": None, "transaction_id": None,
+    }
+    if key:
+        data["idempotency_key"] = key
+    if diagnosis:
+        data["diagnosis"] = diagnosis
+    data["content_hash"] = content_hash_of(data)
+    body = f"# Proposal: {title}\n\nReview required; no canonical changes have been applied.\n"
+    if diagnostic:
+        body += "\nDiagnostic draft only. Supply a repair in a new proposal before review/application.\n"
+    write_markdown(root / "memory/_proposals" / f"{prop_id}.md", data, body)
+    return data
+
+
+def cmd_create(root: Path, args: argparse.Namespace) -> int:
+    if args.ops_file:
+        if args.op:
+            raise ValueError("use --op or --ops-file, not both")
+        ops = yaml.safe_load(Path(args.ops_file).read_text(encoding="utf-8"))
+    else:
+        ops = [transact.operation_from_args(args)]
+    data = create_proposal(root, args.title, args.namespace, args.proposer, ops, args.status, args.idempotency_key)
+    print(f"Proposal created: {data['proposal_id']}")
     return 0
-
-
-def cmd_show(root: Path, args: argparse.Namespace) -> int:
-    prop_dir = root / "memory/_proposals"
-    prop_id = args.proposal_id
-    for path in prop_dir.glob("*.md"):
-        data, body = split_frontmatter(path)
-        if data.get("proposal_id") == prop_id:
-            print(yaml.safe_dump(data, sort_keys=False, allow_unicode=True))
-            if body.strip():
-                print(body)
-            return 0
-    print(f"ERROR: proposal not found: {prop_id}", file=sys.stderr)
-    return 1
 
 
 def cmd_apply(root: Path, args: argparse.Namespace) -> int:
-    """Apply an approved proposal using the transaction tool."""
-    import transact  # type: ignore[import]
-
-    prop_dir = root / "memory/_proposals"
-    prop_id = args.proposal_id
-    prop_path: Path | None = None
-    prop_data: dict[str, Any] = {}
-
-    for path in prop_dir.glob("*.md"):
-        data, _ = split_frontmatter(path)
-        if data.get("proposal_id") == prop_id:
-            prop_path = path
-            prop_data = data
-            break
-
-    if not prop_path:
-        print(f"ERROR: proposal not found: {prop_id}", file=sys.stderr)
-        return 1
-
-    status = prop_data.get("status")
-    if status != "approved":
-        print(f"ERROR: proposal {prop_id} is not approved (status={status!r})", file=sys.stderr)
-        return 1
-
-    roles = load_roles(root)
-    namespace = prop_data.get("namespace", "")
-    required = _required_approvals(roles, namespace)
-    approvals = prop_data.get("approvals") or []
-    if len(approvals) < required:
-        print(f"ERROR: proposal needs {required} approval(s), has {len(approvals)}", file=sys.stderr)
-        return 1
-
-    assume_yes = getattr(args, "yes", False)
-
-    # Build and commit a transaction for this proposal
-    idempotency_key = f"apply-proposal-{prop_id}"
-
-    # Use transact module directly
-    class FakeArgs:
-        pass
-
-    fa = FakeArgs()
-    fa.idempotency_key = idempotency_key
-    fa.expected_revision = None
-    fa.agent = prop_data.get("proposer_id")
-    ret = transact.cmd_begin(root, fa)
-    if ret != 0:
-        return ret
-
-    # Reload to get txn_id
-    from transact import load_staging_meta as lsm, staging_dir
-    txn_id: str | None = None
-    staging_base = root / "memory/_staging"
-    for d in staging_base.iterdir():
-        if d.is_dir() and (d / ".pending").exists():
-            m = lsm(root, d.name)
-            if m.get("idempotency_key") == idempotency_key and m.get("status") == "pending":
-                txn_id = d.name
-                break
-    if not txn_id:
-        # Already idempotent skip
-        print(f"Proposal {prop_id} was already applied (idempotent skip).")
-        _mark_proposal_applied(prop_path, prop_data, "idempotent")
+    path, data = load_proposal(root, args.proposal_id)
+    if data.get("status") == "applied":
+        print(f"Proposal {args.proposal_id} already applied (idempotent skip).")
         return 0
-
-    # Add operations
-    for op_desc in prop_data.get("ops", []):
-        fa2 = FakeArgs()
-        fa2.txn_id = txn_id
-        fa2.op = op_desc.get("op", "create_fact")
-        fa2.entity = op_desc.get("entity")
-        fa2.predicate = op_desc.get("predicate")
-        fa2.value = op_desc.get("value")
-        fa2.source = (op_desc.get("sources") or [None])[0]
-        fa2.confidence = op_desc.get("confidence", "medium")
-        fa2.reason = f"Applied from proposal {prop_id}"
-        ret = transact.cmd_add(root, fa2)
-        if ret != 0:
-            return ret
-
-    # Commit
-    fa3 = FakeArgs()
-    fa3.txn_id = txn_id
-    fa3.yes = assume_yes
-    ret = transact.cmd_commit(root, fa3)
-    if ret != 0:
-        return ret
-
-    # Load committed txn journal to get the txn_id for the proposal record
-    _mark_proposal_applied(prop_path, prop_data, txn_id)
-    print(f"Proposal {prop_id} applied.")
+    if data.get("status") != "approved":
+        raise ValueError(f"proposal is not approved (status={data.get('status')!r})")
+    roles = load_roles(root)
+    error = check_proposer_allowed(roles, data["namespace"], data["proposer_id"])
+    if error:
+        raise ValueError(error)
+    approvals = valid_approvals(root, data)
+    if len(approvals) < _required_approvals(roles, data["namespace"]):
+        raise ValueError("proposal does not have enough current, authorized, hash-bound approvals")
+    if not data.get("ops"):
+        raise ValueError("diagnostic draft has no executable repair operations")
+    for op in data["ops"]:
+        if op.get("op") != "create_event":
+            if data["namespace"] != "facts":
+                raise ValueError("fact operations must use namespace facts")
+            enforce_trust(root, op, data["proposer_id"], reviewed=True)
+    if not args.yes and input(f"Apply {args.proposal_id}? [y/N] ").lower() not in {"y", "yes"}:
+        print("Cancelled.", file=sys.stderr)
+        return 1
+    meta = transact.begin(root, f"apply-proposal-{args.proposal_id}", data["proposer_id"])
+    updated = dict(data, status="applied", applied_at=iso(utc_now()), transaction_id=meta["transaction_id"])
+    if meta["status"] != "committed":
+        meta["ops"] = data["ops"]
+        transact.save_staging_meta(root, meta["transaction_id"], meta)
+        writes = transact.prepare_operations(root, meta, reviewed=True)
+        writes[path.relative_to(root).as_posix()] = transact.markdown(updated, f"# Proposal: {data['title']}\n\nStatus: **applied**")
+        transact.validate_candidate(root, writes)
+        transact.publish(root, meta, writes)
+    print(f"Proposal {args.proposal_id} applied.")
     return 0
 
 
-def _mark_proposal_applied(prop_path: Path, prop_data: dict[str, Any], txn_id: str) -> None:
-    updated = dict(prop_data)
-    updated["status"] = "applied"
-    updated["applied_at"] = iso(utc_now())
-    updated["transaction_id"] = txn_id
-    body = f"# Proposal: {prop_data.get('title')}\n\nStatus: **applied** via transaction `{txn_id}`.\n"
-    write_markdown(prop_path, updated, body)
-
-
-def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    sub = parser.add_subparsers(dest="command")
-
-    p_create = sub.add_parser("create", help="Create a new proposal")
-    p_create.add_argument("--title", required=True)
-    p_create.add_argument("--namespace", required=True)
-    p_create.add_argument("--proposer", required=True)
-    p_create.add_argument("--op", required=True, choices=["create_fact", "update_fact", "archive_fact"])
-    p_create.add_argument("--entity", default=None)
-    p_create.add_argument("--predicate", default=None)
-    p_create.add_argument("--value", default=None)
-    p_create.add_argument("--source", default=None)
-    p_create.add_argument("--confidence", default="medium", choices=["high", "medium", "low"])
-
-    p_list = sub.add_parser("list", help="List proposals")
-    p_list.add_argument("--status", default=None, choices=list(VALID_STATUSES))
-
-    p_show = sub.add_parser("show", help="Show a proposal")
-    p_show.add_argument("--proposal-id", required=True)
-
-    p_apply = sub.add_parser("apply", help="Apply an approved proposal")
-    p_apply.add_argument("--proposal-id", required=True)
-    p_apply.add_argument("--yes", action="store_true")
-
-    return parser
-
-
 def main() -> int:
-    parser = build_parser()
+    parser = argparse.ArgumentParser(description=__doc__)
+    sub = parser.add_subparsers(dest="command", required=True)
+    p = sub.add_parser("create")
+    p.add_argument("--title", required=True)
+    p.add_argument("--namespace", required=True)
+    p.add_argument("--proposer", required=True)
+    transact.operation_arguments(p, required=False)
+    p.add_argument("--ops-file", help="YAML/JSON operation list")
+    p.add_argument("--status", choices=["draft", "proposed"], default="proposed")
+    p.add_argument("--idempotency-key")
+    p = sub.add_parser("list")
+    p.add_argument("--status", choices=VALID_STATUSES)
+    p = sub.add_parser("show")
+    p.add_argument("--proposal-id", required=True)
+    p = sub.add_parser("apply")
+    p.add_argument("--proposal-id", required=True)
+    p.add_argument("--yes", action="store_true")
     args = parser.parse_args()
     root = Path.cwd()
-
-    if args.command == "create":
-        return cmd_create(root, args)
-    if args.command == "list":
-        return cmd_list(root, args)
-    if args.command == "show":
-        return cmd_show(root, args)
-    if args.command == "apply":
-        return cmd_apply(root, args)
-
-    parser.print_help()
-    return 1
+    try:
+        if args.command == "create":
+            return cmd_create(root, args)
+        if args.command == "apply":
+            return cmd_apply(root, args)
+        if args.command == "show":
+            path, _ = load_proposal(root, args.proposal_id)
+            print(path.read_text(encoding="utf-8"), end="")
+        else:
+            for path in sorted((root / "memory/_proposals").glob("*.md")):
+                data, _ = split_frontmatter(path)
+                if not args.status or args.status == data.get("status"):
+                    print(f"{data.get('status')}  {data.get('proposal_id')}  {data.get('title')}")
+        return 0
+    except (OSError, ValueError, yaml.YAMLError) as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":

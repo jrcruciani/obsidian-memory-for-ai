@@ -139,6 +139,10 @@ def validate_type(value: Any, expected: Any) -> bool:
         return isinstance(value, dict)
     if expected == "integer":
         return isinstance(value, int) and not isinstance(value, bool)
+    if expected == "number":
+        return isinstance(value, (int, float)) and not isinstance(value, bool)
+    if expected == "boolean":
+        return isinstance(value, bool)
     return True
 
 
@@ -208,8 +212,8 @@ def validate_spec_version(root: Path) -> list[Finding]:
     version = data.get("spec_version")
     status = data.get("schema_status")
     findings: list[Finding] = []
-    if str(version) != SUPPORTED_SPEC_VERSION:
-        findings.append(Finding("ERROR", path, f"spec_version must be {SUPPORTED_SPEC_VERSION!r}"))
+    if str(version) not in {"4.0", "4.1"}:
+        findings.append(Finding("ERROR", path, "spec_version must be '4.0' or '4.1'"))
     if status != "stable":
         findings.append(Finding("ERROR", path, "schema_status must be 'stable'"))
     return findings
@@ -458,9 +462,22 @@ def validate_operation_payload(
 
 
 def validate(root: Path) -> list[Finding]:
+    from memory_model import enabled
+
+    v41 = enabled(root)
     findings: list[Finding] = validate_spec_version(root)
     schema_dir = root / "memory/schema"
     schemas = {path.stem.replace(".schema", ""): load_yaml(path) for path in schema_dir.glob("*.schema.yaml")}
+    if v41:
+        # New tooling also works when a migrated vault retains its v4 schemas.
+        schemas["fact"]["properties"]["confidence"] = {}
+    else:
+        schemas["fact"]["properties"]["confidence"] = {"enum": ["high", "medium", "low"]}
+        for field in ("created_at", "agent_id", "valid_until", "observed_at", "supersedes",
+                      "derived_from", "assertion", "trust", "pinned", "last_confirmed",
+                      "review_after", "status", "retracted_at", "reason"):
+            schemas["fact"]["properties"].pop(field, None)
+        schemas.get("event", {}).get("properties", {}).pop("asserts", None)
     roles = load_roles(root)
 
     if "claim" in schemas:
@@ -481,6 +498,8 @@ def validate(root: Path) -> list[Finding]:
 
     for path in markdown_files(root):
         if "/_views/" in path.as_posix() or "/_indexes/" in path.as_posix():
+            continue
+        if v41 and "/_staging/" in path.as_posix():
             continue
         in_inbox = "/_inbox/" in path.as_posix()
         in_archive = "/_archive/" in path.as_posix()
@@ -521,9 +540,9 @@ def validate(root: Path) -> list[Finding]:
             if predicate not in predicates:
                 findings.append(Finding("ERROR", path, unknown_predicate_message(predicate)))
             expected_dir = root / "memory/facts" / str(entity)
-            if not in_inbox and not in_archive and not in_staging and path.parent != expected_dir:
+            if not v41 and not in_inbox and not in_archive and not in_staging and path.parent != expected_dir:
                 findings.append(Finding("ERROR", path, f"fact must live in memory/facts/{entity}/"))
-            if not in_inbox and not in_archive and not in_staging and isinstance(predicate, str):
+            if not v41 and not in_inbox and not in_archive and not in_staging and isinstance(predicate, str):
                 if not (path.stem == predicate or path.stem.startswith(f"{predicate}--")):
                     findings.append(Finding("ERROR", path, "fact filename must be predicate.md or predicate--suffix.md"))
             try:
@@ -604,6 +623,11 @@ def validate(root: Path) -> list[Finding]:
                 findings.append(Finding("ERROR", path, f"ambiguous wikilink: {link}"))
             elif not exists:
                 findings.append(Finding("ERROR", path, f"unresolved wikilink: {link}"))
+
+    if v41:
+        from lint_v41 import validate_facts
+        findings.extend(validate_facts(root, facts))
+        return findings
 
     for i, (path_a, data_a) in enumerate(facts):
         for path_b, data_b in facts[i + 1:]:

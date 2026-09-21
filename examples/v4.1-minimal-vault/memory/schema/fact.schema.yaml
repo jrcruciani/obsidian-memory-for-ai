@@ -9,9 +9,23 @@ properties:
   valid_from: { type: [string, "null"], format: date }
   valid_to: { type: [string, "null"], format: date }
   recorded_at: { type: string, format: date-time }
-  confidence: { enum: [high, medium, low] }
+  confidence: { type: [number, string], description: "0..1, or legacy high/medium/low" }
   sources: { type: array, items: { type: string } }
   last_reviewed: { type: string, format: date }
   superseded_by: { type: [string, "null"] }
   tags: { type: array, items: { type: string } }
   decay: { type: object }
+  created_at: { type: string, format: date-time }
+  agent_id: { type: string }
+  valid_until: { type: [string, "null"], format: date }
+  observed_at: { type: [string, "null"], format: date-time }
+  supersedes: { type: [string, "null"] }
+  derived_from: { type: array, items: { type: string } }
+  assertion: { enum: [stated, inferred, observed] }
+  trust: { enum: [owner, agent, external] }
+  pinned: { type: boolean }
+  last_confirmed: { type: [string, "null"], format: date }
+  review_after: { type: [string, "null"], format: date }
+  status: { enum: [active, retracted] }
+  retracted_at: { type: string, format: date-time }
+  reason: { type: string }

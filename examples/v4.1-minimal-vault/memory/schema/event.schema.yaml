@@ -10,3 +10,4 @@ properties:
   derived_facts: { type: array, items: { type: string } }
   tags: { type: array, items: { type: string } }
   body: { type: string }
+  asserts: { type: array, items: { type: object } }

@@ -9,6 +9,7 @@ output format for the same vault state.
 from __future__ import annotations
 
 import argparse
+import datetime as dt
 import sys
 from pathlib import Path
 from typing import Any
@@ -16,6 +17,7 @@ from typing import Any
 import yaml
 
 from lint import split_frontmatter, parse_datetime
+from memory_model import confidence, effective_fact, enabled, interval, observed, records, safe_path, visible
 from rebuild_indexes import (
     build_lexical,
     build_graph_edges,
@@ -40,16 +42,38 @@ def rel(path: Path, root: Path) -> str:
 def cmd_facts(root: Path, args: argparse.Namespace) -> int:
     entity = getattr(args, "entity", None)
     predicate = getattr(args, "predicate", None)
+    if args.why:
+        entity, predicate = args.why
+    rows = records(root, "memory/facts", "fact")
+    if args.history:
+        rows.sort(key=lambda row: (interval(row[1])[0], observed(row[1]), rel(row[0], root)))
     found = False
-    for path in sorted((root / "memory/facts").rglob("*.md")):
-        data = frontmatter(path)
-        if data.get("type") != "fact":
-            continue
+    for path, original in rows:
+        data = effective_fact(root, original) if enabled(root) else original
         if entity and data.get("entity") != entity:
             continue
         if predicate and data.get("predicate") != predicate:
             continue
+        if enabled(root) and not args.history and not visible(data, args.as_of):
+            continue
+        if args.trust and data.get("trust") != args.trust:
+            continue
+        if args.min_confidence is not None:
+            score = confidence(data.get("confidence"))
+            if score is None or score < args.min_confidence:
+                continue
         print(f"{rel(path, root)}: {data['predicate']} = {render_value(data.get('value'))}")
+        if args.history:
+            print(f"  valid: {data.get('valid_from') or 'unknown'} -> {data.get('valid_until', data.get('valid_to')) or 'present'}; observed: {observed(data).isoformat()}")
+        if args.why:
+            print(f"  assertion: {data.get('assertion', 'stated')}; trust: {data.get('trust', 'agent')}; confidence: {data.get('confidence', 'unspecified')}")
+            for reference in data.get("derived_from", []):
+                evidence = safe_path(root, reference, ("memory/events/", "sources/"))
+                fm, body = split_frontmatter(evidence)
+                heading = next((line.lstrip("# ").strip() for line in body.splitlines() if line.startswith("# ")), evidence.stem)
+                title = fm.get("title") or fm.get("summary") or heading
+                date = fm.get("occurred_at") or fm.get("date") or fm.get("created_at") or fm.get("recorded_at") or "undated"
+                print(f"  evidence: {reference} | {title} | {date}")
         found = True
     if not found:
         filters = []
@@ -162,6 +186,12 @@ def build_parser() -> argparse.ArgumentParser:
     p_facts = sub.add_parser("facts")
     p_facts.add_argument("--entity", default=None)
     p_facts.add_argument("--predicate", default=None)
+    temporal = p_facts.add_mutually_exclusive_group()
+    temporal.add_argument("--as-of", type=dt.date.fromisoformat)
+    temporal.add_argument("--history", action="store_true")
+    p_facts.add_argument("--trust", choices=["owner", "agent", "external"])
+    p_facts.add_argument("--min-confidence", type=float)
+    p_facts.add_argument("--why", nargs=2, metavar=("ENTITY", "PREDICATE"))
 
     p_events = sub.add_parser("events")
     p_events.add_argument("--since", default=None)
@@ -186,6 +216,11 @@ def main() -> int:
     parser = build_parser()
     args = parser.parse_args()
     root = Path.cwd()
+    if args.command == "facts" and args.min_confidence is not None:
+        try:
+            confidence(args.min_confidence)
+        except ValueError as exc:
+            parser.error(str(exc))
 
     if args.command == "facts":
         return cmd_facts(root, args)

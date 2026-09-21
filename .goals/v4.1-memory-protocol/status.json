@@ -1,8 +1,8 @@
 {
   "goal_id": "v4.1-memory-protocol",
   "status": "in_progress",
-  "phase": 1,
+  "phase": 2,
   "baseline": "62 tests pass; v3/v4 lint and deterministic rebuilds unchanged",
-  "completed": ["orientation"],
+  "completed": ["orientation", "temporal facts", "lineage and trust"],
   "deferred": ["optional LongMemEval adapter"]
 }

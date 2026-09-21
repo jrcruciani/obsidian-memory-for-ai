@@ -22,6 +22,11 @@ namespaces:
       - agent-test-1234abcd
     allowed_reviewers:
       - agent-human-00000001
+    max_trust_by_role:
+      proposer: agent
+      reviewer: owner
+      admin: owner
+    external_requires_review: true
   - id: schema
     description: Changes to memory/schema/** (new predicates, entities).
     required_approvals: 1

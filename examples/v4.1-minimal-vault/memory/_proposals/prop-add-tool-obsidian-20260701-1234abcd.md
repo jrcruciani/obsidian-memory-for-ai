@@ -6,7 +6,7 @@ proposer_id: agent-local-1234abcd
 title: "Add tool fact: Elena Voss uses Obsidian"
 status: approved
 created_at: 2026-07-01T08:00:00Z
-content_hash: sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+content_hash: sha256:5b6b4c50d2c0d0a7d2deae2e26f9df8311b35b309f22b502cc999edf46e4cd7f
 required_approvals: 1
 approvals:
   - agent-human-00000001
