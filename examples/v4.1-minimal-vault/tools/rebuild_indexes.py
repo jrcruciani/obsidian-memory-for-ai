@@ -146,7 +146,7 @@ def build_graph_edges(root: Path, entities: set[str]) -> list[tuple[str, str, st
                     edges.add((source_entity, target, rel(path, root)))
 
     # Edges from wikilinks in people/ and projects/ pages
-    for path in sorted((root / "memory").rglob("*.md")):
+    for path in markdown_files(root):
         if "/_views/" in path.as_posix() or "/_indexes/" in path.as_posix():
             continue
         if "facts/" in path.as_posix():

@@ -64,7 +64,10 @@ def records(root: Path, folder: str, typ: str) -> list[tuple[Path, dict[str, Any
 
 def observed(data: dict[str, Any]) -> dt.datetime:
     value = data.get("observed_at") or data.get("created_at") or data.get("recorded_at")
-    return parse_datetime(value).astimezone(dt.timezone.utc)
+    parsed = parse_datetime(value)
+    if parsed.tzinfo is None:
+        raise ValueError("observed time must include timezone")
+    return parsed.astimezone(dt.timezone.utc)
 
 
 def interval(data: dict[str, Any]) -> tuple[dt.date, dt.date]:
@@ -153,10 +156,16 @@ def entities(root: Path) -> dict[str, dict[str, Any]]:
     result = {}
     for entry in data.get("entities", []):
         if isinstance(entry, dict) and isinstance(entry.get("id"), str):
-            result[entry["id"]] = dict(entry, aliases=list(entry.get("aliases") or []))
+            aliases = entry.get("aliases", [])
+            if not isinstance(aliases, list) or any(not isinstance(alias, str) or not alias.strip() for alias in aliases):
+                raise ValueError(f"aliases for {entry['id']} must be a list of non-empty strings")
+            result[entry["id"]] = dict(entry, aliases=list(aliases))
     for _, entry in records(root, "memory/entities", "entity"):
         if entry.get("id") in result:
-            result[entry["id"]]["aliases"].extend(entry.get("aliases") or [])
+            aliases = entry.get("aliases", [])
+            if not isinstance(aliases, list) or any(not isinstance(alias, str) or not alias.strip() for alias in aliases):
+                raise ValueError(f"aliases for {entry['id']} must be a list of non-empty strings")
+            result[entry["id"]]["aliases"].extend(aliases)
     return result
 
 

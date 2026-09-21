@@ -17,7 +17,7 @@ from typing import Any
 import yaml
 import cli
 
-from lint import split_frontmatter, parse_datetime
+from lint import markdown_files, split_frontmatter, parse_datetime
 from memory_model import confidence, effective_fact, enabled, interval, observed, records, resolve, safe_path, visible
 from rebuild_indexes import (
     build_lexical,
@@ -121,7 +121,7 @@ def cmd_events(root: Path, args: argparse.Namespace) -> int:
 
 def cmd_id(root: Path, args: argparse.Namespace) -> int:
     record_id = args.record_id
-    for path in sorted((root / "memory").rglob("*.md")):
+    for path in markdown_files(root):
         if "/_views/" in path.as_posix() or "/_indexes/" in path.as_posix():
             continue
         data = frontmatter(path)
@@ -215,11 +215,11 @@ def cmd_resolve(root: Path, args: argparse.Namespace) -> int:
 
 def cmd_bootstrap(root: Path, args: argparse.Namespace) -> int:
     from bootstrap import build_bootstrap
+    from rebuild_indexes import check_index
 
     text = build_bootstrap(root)
     path = root / "memory/_views/bootstrap.md"
-    if path.exists() and path.read_text(encoding="utf-8") != text:
-        print("WARNING: stale bootstrap; computing from canonical files", file=sys.stderr)
+    check_index(path, text)
     print(text, end="")
     cli.result({"content": text, "chars": len(text)})
     return 0

@@ -66,3 +66,6 @@ questions:
     query: [tools/query.sh, resolve, nonexistent-person]
     exit_code: 2
     contains: ["No entity found"]
+  - id: external-evidence
+    query: [tools/query.sh, facts, --why, concordance, tool]
+    contains: ["Portable XRF analyzer", "trust: external", "sources/2026-09-01-equipment-note.md", "2026-09-01"]

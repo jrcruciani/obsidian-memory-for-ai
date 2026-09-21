@@ -51,6 +51,8 @@ def run(main: Callable[[], int]) -> int:
     if json_mode:
         if diagnostics.getvalue():
             print(diagnostics.getvalue(), end="", file=sys.stderr)
+        if Path(sys.argv[0]).stem not in {"query_impl", "lint"} and output.getvalue():
+            print(output.getvalue(), end="", file=sys.stderr)
         envelope = {"ok": code == 0, "exit_code": code, "data": _result,
                     "text": output.getvalue(), "diagnostics": diagnostics.getvalue()}
         try:

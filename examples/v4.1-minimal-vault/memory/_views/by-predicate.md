@@ -7,3 +7,4 @@
 - **primary-project** — `elena-voss` = concordance — `memory/facts/elena-voss/primary-project.md`
 - **publication-channel** — `strata` = obsidian — `memory/facts/strata/publication-channel.md`
 - **role** — `elena-voss` = Lead conservator and pigment researcher — `memory/facts/elena-voss/role.md`
+- **tool** — `concordance` = Portable XRF analyzer — `memory/facts/concordance/tool.md`

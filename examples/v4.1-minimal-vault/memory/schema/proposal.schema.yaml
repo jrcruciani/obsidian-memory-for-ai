@@ -16,3 +16,6 @@ properties:
   applied_at: { type: [string, "null"], format: date-time }
   transaction_id: { type: [string, "null"] }
   rejection_reason: { type: [string, "null"] }
+  hash_version: { enum: ["4.1"] }
+  idempotency_key: { type: string }
+  diagnosis: { type: object }

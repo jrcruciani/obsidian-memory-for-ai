@@ -1,87 +1,69 @@
-# v4 minimal vault — reference implementation
+# v4.1 minimal vault
 
-**SPEC-v4.0 Transactional Atomic Markdown Memory**
-
-This is the reference vault for the v4.0 protocol. It demonstrates all three new capabilities without introducing a database, daemon, server, or binary source of truth.
+The self-contained reference for [SPEC-v4.1](../../SPEC-v4.1.md). All people
+and scenarios are fictional. Python 3 + PyYAML only; offline, no model needed.
+Read [AGENTS.md](AGENTS.md) before operating on the vault.
 
 ## Quick start
 
 ```bash
-cd examples/v4-minimal-vault
 python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
-python3 tools/lint.py
-MEMORY_TODAY=2026-07-01 tools/rebuild-views.sh
-python3 tools/rebuild_indexes.py
-tools/query.sh facts --entity elena-voss
-tools/query.sh search elena
-tools/query.sh graph entity concordance
+source .venv/bin/activate
+python3 tools/lint.py --strict
+MEMORY_TODAY=2026-09-21 tools/rebuild-views.sh
+tools/rebuild-indexes.sh
+MEMORY_TODAY=2026-09-21 tools/query.sh bootstrap
 ```
 
-## v4 capabilities
+## Demonstrations
 
-### 1. Git-native transactions
+| Feature | Try it |
+|---|---|
+| Current role | `tools/query.sh facts --entity elena-voss --predicate role` |
+| Old role | `tools/query.sh facts --entity elena-voss --predicate role --as-of 2026-07-01` |
+| All versions | `tools/query.sh facts --entity elena-voss --predicate role --history` |
+| Role evidence | `tools/query.sh facts --why elena-voss role` |
+| Reviewed external input | `tools/query.sh facts --why concordance tool` |
+| Trust/confidence filtering | `tools/query.sh facts --trust external --min-confidence 0.7` |
+| Aliases | `tools/query.sh resolve Voss` and `tools/query.sh search "Eléna Voss"` |
+| Core memory | `tools/query.sh bootstrap` |
+| Staleness | `python3 tools/lint.py --stale` (report only; `--strict` fails) |
+| Consolidation | `python3 tools/consolidate.py --dry-run` (clean vault: no issues) |
+| Structured output | `tools/query.sh facts --entity elena-voss --json` |
+
+Elena's July 15 role supersedes the original role under
+`memory/facts/elena-voss/role/2026-03-15.md`. The history filename uses its
+recorded date because the old world-valid start is unknown.
+The current role is pinned in bootstrap. The external tool claim links to
+an immutable source and has an applied proposal, an independent review, and
+a transaction receipt. Contradiction fixtures live only in tests, not here.
+
+## Safe writes
 
 ```bash
-python3 tools/transact.py begin --idempotency-key "add-language-es-2026-07" --agent agent-local-1234abcd
+python3 tools/transact.py begin --idempotency-key "add-elena-tool" --agent agent-local-1234abcd
 python3 tools/transact.py add --txn-id <txn-id> --op create_fact \
-  --entity elena-voss --predicate language --value "Spanish"
+  --entity elena-voss --predicate tool --value "Obsidian" --trust agent
 python3 tools/transact.py commit --txn-id <txn-id> --yes
-python3 tools/transact.py list
 ```
 
-Replaying the same `--idempotency-key` is a no-op once committed.
+To change an existing value, use `supersede_fact --valid-from YYYY-MM-DD`.
+For external or multi-agent writes use `propose.py create` with the same op
+flags (or `--ops-file`), `review.py approve` by a different authorized actor,
+then `propose.py apply --yes`. Direct external transactions are refused by
+this vault's roles policy. Recovery uses `transact.py recover --yes`.
 
-### 2. Formal proposal/review lifecycle
+Do not edit generated `_views/` or `_indexes/`. Queries return the same data
+without them; rebuilding twice with the same `MEMORY_TODAY` is byte-identical.
+Never rewrite existing sources or events. New events use `create_event`.
+Consolidation creates non-executable diagnostic drafts, never direct repairs.
+
+From the repository root, run all regression tests and offline evaluations:
 
 ```bash
-# Create a proposal
-python3 tools/propose.py create \
-  --title "Add Obsidian tool fact" \
-  --namespace facts \
-  --proposer agent-local-1234abcd \
-  --op create_fact \
-  --entity elena-voss \
-  --predicate tool \
-  --value Obsidian
-
-# Approve the proposal (must not be same agent as proposer)
-python3 tools/review.py approve \
-  --proposal-id <prop-id> \
-  --reviewer agent-human-00000001 \
-  --comment "Confirmed."
-
-# Apply once approved
-python3 tools/propose.py apply --proposal-id <prop-id> --yes
+python3 -m unittest discover -s tests
+python3 tests/eval/run_eval.py
 ```
 
-### 3. Deterministic indexes with fallback
-
-```bash
-# Build indexes
-python3 tools/rebuild_indexes.py
-
-# Search via index (automatic fallback to filesystem if index is missing)
-tools/query.sh search "pigment"
-tools/query.sh graph entity concordance
-
-# Delete indexes and rebuild — output is byte-identical
-rm -rf memory/_indexes
-python3 tools/rebuild_indexes.py
-```
-
-## Directory structure
-
-| Path | Purpose |
-|------|---------|
-| `memory/facts/` | Atomic typed facts (one per file) |
-| `memory/events/` | Append-only episodic records |
-| `memory/schema/` | YAML schemas, predicates, and role policy |
-| `memory/_transactions/` | Transaction journals/receipts |
-| `memory/_proposals/` | Formal proposals awaiting review |
-| `memory/_reviews/` | Review records (cryptographically bound) |
-| `memory/_staging/` | Isolated staging area (cleared after commit) |
-| `memory/_views/` | Generated views — do not edit |
-| `memory/_indexes/` | Generated lexical and graph indexes — do not edit |
-| `memory/_inbox/` | Legacy v3-compatible operation envelopes |
-| `memory/_ops/applied/` | Applied operation receipts |
+The sibling v3/v4 reference vaults remain preserved for compatibility.

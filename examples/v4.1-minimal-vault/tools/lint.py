@@ -221,7 +221,11 @@ def validate_spec_version(root: Path) -> list[Finding]:
 
 
 def markdown_files(root: Path) -> list[Path]:
-    return sorted((root / "memory").rglob("*.md"))
+    from memory_model import enabled
+    paths = sorted((root / "memory").rglob("*.md"))
+    if enabled(root):
+        paths = [path for path in paths if "_staging" not in path.relative_to(root).parts]
+    return paths
 
 
 def existing_link_targets(root: Path) -> tuple[set[str], dict[str, list[str]]]:

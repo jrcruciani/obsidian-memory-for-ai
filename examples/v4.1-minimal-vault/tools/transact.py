@@ -37,7 +37,10 @@ def slugify(value: str, limit: int = 24) -> str:
 
 
 def markdown(data: dict[str, Any], body: str = "") -> str:
-    return f"---\n{yaml.safe_dump(data, sort_keys=False, allow_unicode=True).strip()}\n---\n\n{body.rstrip()}\n"
+    if not isinstance(body, str):
+        raise ValueError("record body must be text")
+    header = f"---\n{yaml.safe_dump(data, sort_keys=False, allow_unicode=True).strip()}\n---\n"
+    return header + f"\n{body.rstrip()}\n" if body.strip() else header
 
 
 def write_text(path: Path, text: str) -> None:
@@ -227,7 +230,8 @@ def prepare_operations(root: Path, meta: dict[str, Any], reviewed: bool = False)
             data["valid_until"] = None
             data["supersedes"] = history
             data["id"] = f"fact-{entity}-{predicate}-{start}-{hashlib.sha256((meta['transaction_id'] + str(index)).encode()).hexdigest()[:8]}"
-        for field in (*FACT_FIELDS, "sources", "recorded_at", "created_at", "last_reviewed", "tags", "decay"):
+        for field in (*FACT_FIELDS, "sources", "recorded_at", "created_at", "last_reviewed", "tags", "decay",
+                      "status", "retracted_at", "reason"):
             if field in op:
                 data[field] = op[field]
         if "id" in op and kind == "create_fact":

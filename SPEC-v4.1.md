@@ -1,15 +1,20 @@
 # SPEC v4.1 — Temporal, Traceable Atomic Markdown Memory
 
-> **Status:** v4.1 implementation in progress.
+> **Status:** Stable v4.1 — current protocol.
 > **Author:** Project maintainers
-> **Date:** July 2026
-> **Supersedes:** v3.1 for new implementations; v3 remains supported as the previous stable generation.
+> **Date:** September 2026
+> **Supersedes:** v4.0 for new implementations; v4.0 and v3 remain supported.
 > **Reference implementation:** [`examples/v4.1-minimal-vault/`](examples/v4.1-minimal-vault/)
 > **Implements (none of):** SQLite, databases, vector stores, embeddings, servers, daemons, or any binary format.
 
 ---
 
 ## TL;DR
+
+v4.1 adds temporal history, traceable evidence, trust policy, compact core
+memory, and deterministic retrieval to v4's transaction/review foundation.
+**Markdown/YAML and Git remain the only canonical state.** Every tool runs
+offline with Python 3 and PyYAML only; no model is required.
 
 ## What changed from v4.0
 
@@ -23,12 +28,10 @@
 | Offline evaluations | Exact query contracts enforced in CI |
 | Agent ergonomics | JSON CLIs and bootstrap-first instructions |
 
-The inherited v4 contract follows; implementation-specific v4.1 details are
-completed alongside each phase. Older vaults retain their versioned behavior.
+The inherited v4 contract follows, with v4.1 additions in sections 9–13.
+Older vaults retain their versioned behavior.
 
-v4 extends the Atomic Markdown Memory foundation from v3 with three new capabilities that address the remaining pain points in cooperative agentic memory without compromising the original promise: **Markdown/YAML and Git remain the only canonical state. The vault remains usable offline without a daemon, database, model, network service, or binary index.**
-
-The three additions are:
+The three inherited capabilities are:
 
 1. **Robust Git-native transactions** — atomic multi-operation writes, stable idempotency keys, optional expected-revision checks, isolated staging, and Markdown journal receipts. Interrupted transactions recover safely.
 2. **Formal proposal/review lifecycle** — draft-to-applied governance with cryptographically bound review records, namespace/role policy in portable YAML, and enforced self-approval prohibition.
@@ -49,13 +52,17 @@ The three additions are:
 | `_views/` graph (wikilinks) | Dedicated `_indexes/lexical.md` and `_indexes/graph.md` with fallback guarantee |
 | No compaction governance | `required_approvals` and namespace policy in `roles.yaml` |
 
-### v3 compatibility
+### Version compatibility
 
-v3 vaults remain valid. The v4 specification is a strict superset:
+v4.1 is additive. A valid v4.0 vault with its existing `"4.0"` marker remains
+valid with zero data edits under the new tooling, with the original lint rules.
+`spec_version: "4.1"` enables new semantic checks. All new fields are optional;
+legacy confidence labels, inclusive `valid_to`, and `recorded_at` remain valid.
+The preserved v3 implementation remains the validator for `"3.0"` vaults.
 
-- `spec_version: "4.0"` in `memory/schema/version.yaml` activates v4 validation.
-- v3 operation envelopes (`_inbox/`) continue to work unchanged through `compact.py`.
-- All v3 schemas, predicates, entities, and views are identical in v4.
+Migration is a marker bump after installing the new portable tools. Optional
+schemas/configuration describe the added fields; replacing old schemas is not
+required. New temporal layout and trust policy apply to writes on v4.1.
 
 ---
 
@@ -70,8 +77,8 @@ Any write touching more than one file must use `tools/transact.py`. A transactio
 - Has a stable `transaction_id` (slug + timestamp + hex suffix)
 - Carries a caller-supplied `idempotency_key` — replaying the same key after a commit is a no-op
 - Optionally checks `expected_revision` against Git HEAD before committing
-- Stages all writes under `memory/_staging/<txn-id>/` before atomically publishing them to `memory/`
-- Writes a Markdown journal to `memory/_transactions/<txn-id>.md` with status: `committed`, `failed`, `rolled_back`, or `idempotent_skip`
+- Stages all writes and preimages under `memory/_staging/<txn-id>/` before recoverable publication to `memory/`
+- Writes a Markdown journal with status `committed`, `failed`, or `rolled_back`; committed-key replay makes no new journal
 - On failure, rolls back exactly what it applied and marks the journal `failed`
 
 `tools/transact.py recover --yes` finds any pending staging directories and rolls them back safely.
@@ -90,7 +97,7 @@ draft → proposed → changes_requested ↘
 A proposal:
 
 - Has a stable `proposal_id` and carries its operation list in frontmatter
-- Stores a `content_hash` (SHA-256 of its title + namespace + ops) for tamper detection
+- Stores a `content_hash` (SHA-256 of canonical YAML containing title, namespace, ops, and, with `hash_version: "4.1"`, proposer identity)
 - Is governed by namespace/role policy in `memory/schema/roles.yaml`
 
 A review:
@@ -99,16 +106,20 @@ A review:
 - Must not be from the same agent as the proposer (`self-approval not allowed`)
 - Must come from an agent in `allowed_reviewers` for the proposal's namespace, or an `admin`
 
-Only when `len(approvals) >= required_approvals` may `tools/propose.py apply` proceed.
+Apply recomputes the hash and current authorized approvals from review records;
+the proposal's editable `approvals` list alone grants nothing.
 
 ### P8 — Indexes are derived, never canonical
 
-v4 provides two deterministic indexes under `memory/_indexes/`:
+v4.1 provides two deterministic indexes under `memory/_indexes/`:
 
-- **`lexical.md`** — alphabetically sorted `entity/predicate = value  [path]` for every fact
+- **`lexical.md`** — sorted current facts, aliases, and a separate historical section
 - **`graph.md`** — entity relationship graph derived from fact values and wikilinks
 
-**Invariant:** deleting all index files and running `tools/rebuild_indexes.py` produces byte-identical output for the same canonical input. Query tools use the index when available and fall back to direct filesystem scanning when indexes are missing, stale, or corrupt. Both paths must return identical results.
+**Invariant:** deleting all index files and rebuilding produces byte-identical
+output for the same canonical input. Canonical scans determine query results;
+present indexes are checked against their canonical rendering. Missing, stale,
+or corrupt artifacts never change answers.
 
 ---
 
@@ -118,11 +129,13 @@ v4 provides two deterministic indexes under `memory/_indexes/`:
 memory/
   entities.md              — entity-index: canonical entity declarations
   schema/
-    version.yaml            — spec_version: "4.0"
+    version.yaml            — spec_version: "4.1", optional stale_after_days
     predicates.yaml         — controlled predicate list
-    roles.yaml              — NEW: namespace/role policy
+    roles.yaml              — namespace/role policy, optional trust caps
+    bootstrap.yaml          — optional core-memory budget and selection
     *.schema.yaml           — YAML schemas for all types
   facts/{entity}/{pred}.md  — atomic typed facts (v3 layout, unchanged)
+  facts/{entity}/{pred}/    — superseded versions named by date
   events/YYYY-MM-DD/{id}.md — append-only episodic records
   people/, projects/,       — human narrative pages
     context/, decisions/,
@@ -131,7 +144,7 @@ memory/
   _proposals/               — NEW: formal proposals (Markdown/YAML frontmatter)
   _reviews/                 — NEW: review records (Markdown/YAML frontmatter)
   _staging/                 — NEW: isolated staging (ephemeral, cleared after commit)
-  _views/                   — generated views (rebuild, do not edit)
+  _views/                   — generated views, including bootstrap.md
   _indexes/                 — NEW: generated indexes (rebuild, do not edit)
   _inbox/                   — v3-compat operation envelopes
   _ops/applied/             — applied operation receipts
@@ -169,6 +182,8 @@ title: {string}
 status: draft | proposed | changes_requested | approved | rejected | conflict | applied
 created_at: {datetime}
 content_hash: sha256:{hex64}   # SHA-256 of (title + namespace + ops)
+hash_version: "4.1"           # also binds proposer_id; absent means legacy hash
+idempotency_key: {optional caller-supplied string}
 required_approvals: {integer}
 approvals: [{reviewer-id...}]
 ops: [{op, entity, predicate, value, target_path, ...}]
@@ -199,6 +214,8 @@ namespaces:
     required_approvals: {integer}
     allowed_proposers: [{agent-id...}]
     allowed_reviewers: [{agent-id...}]
+    max_trust_by_role: {proposer: agent, reviewer: owner, admin: owner} # optional
+    external_requires_review: true  # optional
 
 agents:
   - id: {agent-id}
@@ -206,20 +223,41 @@ agents:
     roles: [proposer | reviewer | admin]
 ```
 
+### 4.5 Optional fact additions
+
+```yaml
+valid_from: null       # existing v4 field: world-valid start date
+valid_until: null      # exclusive world-valid end date
+observed_at: null      # zoned datetime; defaults to created_at, then recorded_at
+supersedes: null       # vault-relative previous fact path
+derived_from: []       # memory/events/ or sources/ evidence paths
+assertion: stated      # stated | inferred | observed
+confidence: 0.8        # 0..1; legacy high | medium | low still accepted
+trust: agent          # owner | agent | external; role-dependent default
+pinned: false
+last_confirmed: null  # semantic confirmation date
+review_after: null    # explicit review deadline date
+```
+
+All these fields are optional. New tooling does not rewrite absent defaults.
+The legacy required fact fields (`type`, `entity`, `predicate`, `value`,
+`recorded_at`) remain unchanged. Retraction metadata is described in section 13.
+
 ---
 
 ## 5. Tools reference
 
 | Tool | Purpose |
 |------|---------|
-| `tools/lint.py` | Validate vault (v3 + v4 types) |
+| `tools/lint.py` | Versioned validation; `--stale`, `--strict`, `--json` |
 | `tools/rebuild_views.py` | Regenerate `_views/` |
 | `tools/rebuild_indexes.py` | Regenerate `_indexes/lexical.md` and `_indexes/graph.md` |
 | `tools/transact.py` | Transaction lifecycle: begin / add / commit / rollback / recover / list |
 | `tools/propose.py` | Proposal lifecycle: create / list / show / apply |
 | `tools/review.py` | Review lifecycle: approve / reject / request-changes / list |
+| `tools/consolidate.py` | Diagnose drift and emit non-executable drafts; `--dry-run` |
 | `tools/compact.py` | v3-compat inbox compaction (also works from v4 vaults) |
-| `tools/query.sh` | Query: facts / events / id / operations / search / graph |
+| `tools/query.sh` | facts / events / id / operations / search / graph / resolve / bootstrap |
 
 ---
 
@@ -240,33 +278,40 @@ agents:
 | Source immutability | Files under `sources/` are immutable once committed |
 | Append-only events | Events are never modified after creation |
 | Generated artifacts | `_views/` and `_indexes/` are not canonical; never hand-edited |
+| Single current fact per predicate | v4.1 lint requires one current head for new history chains and rejects duplicate current slots; ended legacy groups remain valid |
+| As-of query parity | Historical/current answers are computed from canonical facts, with or without derived artifacts |
+| Bootstrap determinism | Same canonical input and `MEMORY_TODAY` produce the same complete file within budget |
+| Alias uniqueness | Case/accent-folded aliases cannot name another entity's ID or alias |
+| Trust policy enforcement | Transactions and proposal application enforce current role caps and review requirements |
+| Consolidation never writes canonical knowledge directly | Only diagnostic drafts are emitted through proposal tooling |
 
 ---
 
 ## 7. Quality gates
 
-From `examples/v4-minimal-vault/`:
+From `examples/v4.1-minimal-vault/`:
 
 ```bash
-python3 tools/lint.py
-MEMORY_TODAY=2026-07-01 tools/rebuild-views.sh
+python3 tools/lint.py --strict
+MEMORY_TODAY=2026-09-21 tools/rebuild-views.sh
 tools/rebuild-indexes.sh
+git diff --exit-code -- memory/_views memory/_indexes
 ```
 
 From the repository root:
 
 ```bash
 # v3 regression gate
-cd examples/v3-minimal-vault && python3 tools/lint.py
-cd examples/v3-minimal-vault && MEMORY_TODAY=2026-05-11 tools/rebuild-views.sh
+(cd examples/v3-minimal-vault && python3 tools/lint.py \
+  && MEMORY_TODAY=2026-05-11 tools/rebuild-views.sh)
 
 # v4 regression gate
-cd examples/v4-minimal-vault && python3 tools/lint.py
-cd examples/v4-minimal-vault && MEMORY_TODAY=2026-07-01 tools/rebuild-views.sh
-cd examples/v4-minimal-vault && tools/rebuild-indexes.sh
+(cd examples/v4-minimal-vault && python3 tools/lint.py \
+  && MEMORY_TODAY=2026-07-01 tools/rebuild-views.sh && tools/rebuild-indexes.sh)
 
 # All tests
 python3 -m unittest discover -s tests
+python3 tests/eval/run_eval.py
 ```
 
 ---
@@ -305,14 +350,17 @@ One-day boundary discrepancies warn; larger discrepancies fail.
 ```bash
 python3 tools/transact.py begin --idempotency-key role-change --agent agent-local-1234abcd
 python3 tools/transact.py add --txn-id <txn-id> --op supersede_fact \
-  --entity elena-voss --predicate role --value "Research director" \
-  --valid-from 2026-10-01 --derived-from memory/events/2026-07-15/role-confirmation.md \
+  --entity elena-voss --predicate role --value "<new confirmed role>" \
+  --valid-from 2026-10-01 --derived-from memory/events/2026-10-01/role-confirmation.md \
   --assertion stated --trust agent --confidence 0.9
 python3 tools/transact.py commit --txn-id <txn-id> --yes
 tools/query.sh facts --entity elena-voss --predicate role --as-of 2026-07-01
 tools/query.sh facts --entity elena-voss --predicate role --history
 tools/query.sh facts --why elena-voss role
 ```
+
+Create the referenced confirmation event first (or earlier in the same
+transaction); do not cite the July event as evidence for an unconfirmed role.
 
 Use the same operation flags with `propose.py create`, or `--ops-file` with
 a YAML/JSON operation list for a multi-operation proposal. `create_event`
@@ -442,3 +490,35 @@ the reference vault, with `MEMORY_TODAY=2026-09-21`. Any unexpected exit code,
 missing required substring, forbidden substring, or exact-output mismatch
 fails the gate. Latency is reported but never gates correctness. The suite
 does not call a model and is not a semantic reasoning benchmark.
+
+## 13. Forgetting and Git history
+
+Events are append-only and sources immutable. Deleting a current file does
+not erase prior versions from Git, clones, backups, reviews, or copied
+evidence. This is a real tension with **Git is the transaction log**: audit
+history and genuine erasure are different goals, especially for facts about
+real people.
+
+The non-destructive tombstone convention is:
+
+```yaml
+status: retracted
+retracted_at: 2026-09-21T12:00:00Z
+reason: Owner withdrew this assertion; do not rely on it.
+```
+
+A tombstone retracts an assertion; it is **not deletion or proof of erasure**.
+Current queries, search, and bootstrap exclude it; explicit history still
+exposes the record. Do not bulk-rewrite events to conceal its provenance.
+Only record information the owner has a legitimate reason to retain.
+
+An owner who needs actual removal must separately consider every copy.
+[`git filter-repo`](https://github.com/newren/git-filter-repo) can rewrite
+history, but that is an **out-of-protocol, owner-only, destructive operation**,
+not a memory-tool command. It changes commit identities and requires
+coordination with clone/backup holders; even a successful local rewrite
+cannot guarantee erasure elsewhere.
+
+Role/trust labels are cooperative local policy, not an authentication boundary
+against someone who can edit the vault or its policy files. Confidence expresses
+the recorded assessment, not a guarantee that an external claim is true.

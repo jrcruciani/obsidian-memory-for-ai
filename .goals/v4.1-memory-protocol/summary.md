@@ -1,7 +1,7 @@
 # Completion record
 
-Implementation in progress. Baseline: 62 tests pass; v3 and v4 lint, views,
-indexes, and tracked-artifact drift gates are green.
+Completed: all seven mandatory work items. The only deferred item is the
+explicitly optional LongMemEval adapter. Baseline was 62 passing tests.
 
 Phase 1 creates a separate v4.1 reference and spec without changing the
 supported older implementations.
@@ -39,3 +39,30 @@ a deliberately wrong-answer fixture proving the evaluation gate fails.
 
 The preserved v4 vault receives only an `AGENTS.md` navigation/protocol note;
 its tools, canonical records, generated files, and quality gates are unchanged.
+
+## Final acceptance evidence
+
+| Requirement | Result |
+|---|---|
+| Temporal supersession and lineage/trust | Implemented and demonstrated in the reference vault |
+| Aliases, ranked retrieval, budgeted bootstrap | Implemented with missing/stale/corrupt artifact parity |
+| Staleness and all four consolidation detections | Implemented; planted fixtures emit one idempotent draft each |
+| JSON and agent ergonomics | All CLIs supported, including error paths and review |
+| Unit tests | 152 pass on Python 3.11 (90 v4.1 plus 62 preserved tests) |
+| Offline evaluations | 21/21 pass; a wrong-answer fixture proves failure detection |
+| Generated artifacts | 18 files byte-identical over two consecutive rebuilds and deletion/rebuild tests |
+| Bootstrap budget | 966/6000 characters, including its footer |
+| Clean-vault consolidation | No drafts |
+| v3/v4 regression gates | Pass; original tools/data/views unchanged |
+| Protocol exclusions | No prohibited infrastructure/network imports in v4.1 tools |
+| Documentation | Spec, migration, changelog, navigation, plugin/agent guidance, privacy caveat complete |
+
+Final checks also cover marker-only migration with retained v4 schemas,
+proposal supersession, stale review preconditions, commit-time trust checks,
+retraction visibility, staging exclusion, and corrupted-bootstrap fallback.
+The new external equipment claim has an immutable source, an independent
+review, an applied proposal, and a transaction receipt.
+
+CI retains the old gates and adds strict v4.1 lint, repeated deterministic
+rebuild/drift checks, and the offline evaluations. Runtime tools require only
+Python 3 + PyYAML. Git integration remains optional.

@@ -6,6 +6,7 @@
 - `event-2026-07-01-concordance-milestone` — event — `memory/events/2026-07-01/concordance-milestone.md`
 - `event-2026-07-15-role-confirmation` — event — `memory/events/2026-07-15/role-confirmation.md`
 - `fact-concordance-collaborator` — fact — `memory/facts/concordance/collaborator.md`
+- `fact-concordance-tool` — fact — `memory/facts/concordance/tool.md`
 - `fact-elena-voss-base` — fact — `memory/facts/elena-voss/base.md`
 - `fact-elena-voss-employer` — fact — `memory/facts/elena-voss/employer.md`
 - `fact-elena-voss-language` — fact — `memory/facts/elena-voss/language.md`
@@ -16,6 +17,10 @@
 - `insight-v4-separation` — insight — `memory/insights/v4-indexes.md`
 - `prop-add-tool-obsidian-20260701-1234abcd` — proposal — `memory/_proposals/prop-add-tool-obsidian-20260701-1234abcd.md`
 - `prop-add-tool-obsidian-20260701-1234abcd` — review — `memory/_reviews/rev-prop-add-tool-obsidian-20260701-aabbccdd.md`
+- `prop-record-external-conc-20260921t200133z-a5a22cae` — review — `memory/_reviews/rev-record-external--20260921t200147z-f891d7a3.md`
 - `strata` — project — `memory/projects/strata.md`
 - `txn-add-language-20260701-aabbccdd` — transaction — `memory/_transactions/txn-add-language-20260701-aabbccdd.md`
+- `txn-apply-proposal-prop-reco-20260921t200147z-21005808` — proposal — `memory/_proposals/prop-record-external-conc-20260921t200133z-a5a22cae.md`
+- `txn-apply-proposal-prop-reco-20260921t200147z-21005808` — transaction — `memory/_transactions/txn-apply-proposal-prop-reco-20260921t200147z-21005808.md`
 - `txn-example-role-supersessio-20260921t193705z-b122624d` — transaction — `memory/_transactions/txn-example-role-supersessio-20260921t193705z-b122624d.md`
+- `txn-review-rev-record-extern-20260921t200147z-69b2f80b` — transaction — `memory/_transactions/txn-review-rev-record-extern-20260921t200147z-69b2f80b.md`

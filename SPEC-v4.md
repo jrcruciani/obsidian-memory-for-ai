@@ -1,6 +1,6 @@
 # SPEC v4 — Transactional Atomic Markdown Memory
 
-> **Status:** Stable v4.0 — current protocol.
+> **Status:** Previous stable (v4.0). Current protocol: [`SPEC-v4.1.md`](SPEC-v4.1.md).
 > **Author:** Project maintainers
 > **Date:** July 2026
 > **Supersedes:** v3.1 for new implementations; v3 remains supported as the previous stable generation.

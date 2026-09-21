@@ -3,6 +3,7 @@
 Alphabetically sorted list of all canonical facts. Generated from `memory/facts/`. Do not edit — regenerate with `tools/rebuild-indexes.sh`.
 
 - `concordance/collaborator` = marta-delvaux  [`memory/facts/concordance/collaborator.md`]
+- `concordance/tool` = Portable XRF analyzer  [`memory/facts/concordance/tool.md`]
 - `elena-voss/base` = Berlin, Germany  [`memory/facts/elena-voss/base.md`]
 - `elena-voss/employer` = Gemäldegalerie  [`memory/facts/elena-voss/employer.md`]
 - `elena-voss/language` = German  [`memory/facts/elena-voss/language.md`]

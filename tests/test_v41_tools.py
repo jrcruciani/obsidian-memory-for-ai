@@ -96,6 +96,7 @@ class V41Test(unittest.TestCase):
         shutil.rmtree(self.vault / "memory/facts/elena-voss/role")
         self.edit(BASE, trust="not-a-trust", pinned="not-a-bool", confidence="high")
         self.edit(ROLE, confidence="high")
+        self.edit("memory/facts/concordance/tool.md", confidence="high")
         self.run_tool("lint")
 
     def test_supersede_twice_and_as_of(self):
@@ -288,6 +289,7 @@ class V41Test(unittest.TestCase):
                  "--value", "Notebook", "--derived-from", "memory/events/2026-09-21/test-session.md",
                  "--assertion", "observed", "--confidence", "1")
         self.run_tool("transact", "commit", "--txn-id", txn, "--yes")
+        self.assertTrue((self.vault / "memory/facts/elena-voss/tool.md").read_text().endswith("---\n"))
         self.run_tool("lint")
 
     def test_resolve_case_and_accents(self):
@@ -629,6 +631,90 @@ class V41Test(unittest.TestCase):
                                 env=self.env, text=True, capture_output=True)
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("current-base | FAIL", result.stdout)
+
+    def test_v40_marker_only_migration(self):
+        shutil.rmtree(self.vault / "memory")
+        shutil.copytree(REPO / "examples/v4-minimal-vault/memory", self.vault / "memory")
+        marker = self.vault / "memory/schema/version.yaml"
+        marker.write_text(marker.read_text().replace('"4.0"', '"4.1"'))
+        self.run_tool("lint", "--strict")
+        self.run_tool("rebuild_views")
+        self.run_tool("rebuild_indexes")
+
+    def test_as_of_parity_without_any_derived_artifacts(self):
+        args = ("facts", "--entity", "elena-voss", "--predicate", "role", "--as-of", "2026-07-01")
+        expected = self.run_tool("query", *args).stdout
+        shutil.rmtree(self.vault / "memory/_views")
+        shutil.rmtree(self.vault / "memory/_indexes")
+        self.assertEqual(self.run_tool("query", *args).stdout, expected)
+
+    def test_proposal_supersede_preserves_history(self):
+        result = self.run_tool("propose", "create", "--title", "Reviewed role change", "--namespace", "facts",
+                               "--proposer", AGENT, "--op", "supersede_fact", "--entity", "elena-voss",
+                               "--predicate", "role", "--value", "Research director",
+                               "--valid-from", "2026-08-01", "--json")
+        prop = json.loads(result.stdout)["data"]["proposal_id"]
+        self.approve(prop)
+        self.run_tool("propose", "apply", "--proposal-id", prop, "--yes")
+        self.assertEqual(self.data(ROLE)["value"], "Research director")
+        self.assertIn("Lead conservator", self.data(self.data(ROLE)["supersedes"])["value"])
+        self.run_tool("lint")
+
+    def test_stale_proposal_precondition_fails(self):
+        result = self.run_tool("propose", "create", "--title", "Reviewed role change", "--namespace", "facts",
+                               "--proposer", AGENT, "--op", "supersede_fact", "--entity", "elena-voss",
+                               "--predicate", "role", "--value", "Research director",
+                               "--valid-from", "2026-08-01", "--json")
+        prop = json.loads(result.stdout)["data"]["proposal_id"]
+        self.approve(prop)
+        self.edit(ROLE, confidence=0.99)
+        self.assertIn("precondition", self.run_tool("propose", "apply", "--proposal-id", prop, "--yes", ok=False).stderr)
+
+    def test_trust_rechecked_at_commit(self):
+        txn = self.begin()
+        self.add(txn, "--op", "create_fact", "--entity", "elena-voss", "--predicate", "tool", "--value", "Notebook")
+        meta_path = self.vault / "memory/_staging" / txn / "_meta.yaml"
+        meta = yaml.safe_load(meta_path.read_text())
+        meta["ops"][0]["trust"] = "owner"
+        meta_path.write_text(yaml.safe_dump(meta))
+        self.assertIn("cannot assert trust", self.run_tool("transact", "commit", "--txn-id", txn, "--yes", ok=False).stderr)
+
+    def test_retracted_fact_excluded_from_current_queries(self):
+        self.edit(BASE, status="retracted", retracted_at="2026-09-21T12:00:00Z", reason="Withdrawn")
+        self.run_tool("lint")
+        self.assertNotIn("Berlin", self.run_tool("query", "facts", "--predicate", "base").stdout)
+        self.assertIn("No facts found", self.run_tool("query", "search", "Berlin").stdout)
+        self.assertIn("Berlin", self.run_tool("query", "facts", "--predicate", "base", "--history").stdout)
+
+    def test_bootstrap_corruption_fallback(self):
+        expected = self.run_tool("query", "bootstrap").stdout
+        (self.vault / "memory/_views/bootstrap.md").write_bytes(b"\xff\xfe")
+        result = self.run_tool("query", "bootstrap")
+        self.assertEqual(result.stdout, expected)
+        self.assertIn("WARNING", result.stderr)
+
+    def test_staging_is_not_a_canonical_query_target(self):
+        target = self.vault / "memory/_staging/txn-unpublished/memory/facts/elena-voss"
+        target.mkdir(parents=True)
+        path = target / "base.md"
+        shutil.copyfile(self.vault / BASE, path)
+        self.edit(str(path.relative_to(self.vault)), id="fact-only-in-staging")
+        self.run_tool("query", "id", "fact-only-in-staging", ok=False)
+        self.run_tool("rebuild_views")
+        self.assertNotIn("fact-only-in-staging", (self.vault / "memory/_views/by-id.md").read_text())
+
+    def test_all_generated_files_byte_identical_after_deletion(self):
+        self.run_tool("rebuild_views")
+        self.run_tool("rebuild_indexes")
+        before = {p.relative_to(self.vault): p.read_bytes() for folder in ("memory/_views", "memory/_indexes")
+                  for p in (self.vault / folder).rglob("*.md")}
+        for folder in ("memory/_views", "memory/_indexes"):
+            shutil.rmtree(self.vault / folder)
+        self.run_tool("rebuild_views")
+        self.run_tool("rebuild_indexes")
+        after = {p.relative_to(self.vault): p.read_bytes() for folder in ("memory/_views", "memory/_indexes")
+                 for p in (self.vault / folder).rglob("*.md")}
+        self.assertEqual(before, after)
 
 
 if __name__ == "__main__":

@@ -76,7 +76,7 @@ def validate_facts(root: Path, facts: list[tuple[Path, dict[str, Any]]]) -> list
             start, end = interval(data)
             if start > end:
                 raise ValueError("valid_from must be <= valid_until")
-            if data.get("valid_until") is not None and data.get("valid_to") is not None:
+            if "valid_until" in data and data.get("valid_to") is not None:
                 raise ValueError("use valid_until or legacy valid_to, not both non-null")
             observed(data)
             confidence(data.get("confidence"))
@@ -91,6 +91,9 @@ def validate_facts(root: Path, facts: list[tuple[Path, dict[str, Any]]]) -> list
             if data.get("status") == "retracted":
                 if not data.get("retracted_at") or not data.get("reason"):
                     raise ValueError("retracted fact requires retracted_at and reason")
+                parse_datetime(data["retracted_at"])
+            elif data.get("status", "active") != "active":
+                raise ValueError("fact status must be active or retracted")
             evidence = data.get("derived_from", [])
             if not isinstance(evidence, list):
                 raise ValueError("derived_from must be a list")
@@ -119,6 +122,16 @@ def validate_facts(root: Path, facts: list[tuple[Path, dict[str, Any]]]) -> list
                     findings.append(Finding("WARN", path, "supersedes boundary differs by one day"))
                 elif distance:
                     raise ValueError("supersedes valid_until must equal this fact's valid_from")
+                seen = {path.resolve()}
+                cursor = target
+                while cursor.is_file():
+                    if cursor.resolve() in seen:
+                        raise ValueError("supersedes chain contains a cycle")
+                    seen.add(cursor.resolve())
+                    ancestor, _ = split_frontmatter(cursor)
+                    if not ancestor.get("supersedes"):
+                        break
+                    cursor = safe_path(root, ancestor["supersedes"], ("memory/facts/",))
         except (ValueError, TypeError) as exc:
             findings.append(Finding("ERROR", path, str(exc)))
     for items in grouped.values():

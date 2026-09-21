@@ -1,5 +1,30 @@
 # Changelog
 
+## v4.1.0 - 2026-09-21
+
+**Temporal, Traceable Atomic Markdown Memory — additive v4.1**
+
+- Preserves superseded facts with world-valid and observed times, as-of/history
+  queries, history indexes, and per-entity timelines.
+- Adds evidence lineage, assertion types, numeric confidence, and role-based
+  trust caps with mandatory review for external facts when configured.
+- Generates a deterministic, character-budgeted `_views/bootstrap.md`.
+- Adds staleness reports and idempotent diagnostic consolidation proposals,
+  including comparisons against optional structured event assertions.
+- Resolves case/accent-insensitive entity aliases and ranks lexical results
+  identically with missing, stale, or corrupt derived indexes.
+- Adds JSON CLI envelopes, bootstrap-first agent guidance, and 21 offline
+  query evaluations enforced in CI alongside regression and drift gates.
+- Adds `SPEC-v4.1.md`, `migration-v4.1.md`, and a separate
+  `examples/v4.1-minimal-vault/`, including role history and reviewed evidence.
+- Uses recoverable transaction preimages for supersession, inbox compaction,
+  proposal application, and multi-file review state; approval hashes and
+  current authorization are rechecked before applying.
+- Keeps v3/v4 tools, data, schemas, and generated artifacts unchanged.
+  v4 receives only an agent-guidance note. All new fields are optional,
+  v4.0 lint semantics are version-gated, and legacy confidence labels remain
+  valid. The optional external benchmark adapter is deferred.
+
 ## v4.0.0 - 2026-07-01
 
 **v4 Transactional Atomic Markdown Memory — three new capabilities**

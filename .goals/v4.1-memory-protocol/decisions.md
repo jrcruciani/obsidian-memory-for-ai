@@ -20,3 +20,13 @@
   executable operations until a person/agent supplies and reviews a fix.
 - The optional LongMemEval adapter is deferred: external benchmark conversion
   is not needed for the deterministic protocol acceptance gate.
+- Review and proposal application use the same recoverable publication path as
+  fact writes. Review hashes bind proposer identity for new proposals, and
+  apply counts actual authorized review records rather than an editable list.
+- Staging is not a canonical query/view input. Missing/corrupt derived artifacts
+  never change answers; corrupt/stale artifacts produce explicit diagnostics.
+- The optional-ideas citation preserves the actual Letta result's caveat:
+  its file-oriented experiment included semantic search. Do not claim it
+  proves grep-only retrieval wins universally.
+- The preserved v4 vault gets only an AGENTS navigation note. Its tools,
+  canonical data, schemas, generated artifacts, and existing gates are intact.

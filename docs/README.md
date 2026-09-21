@@ -1,13 +1,15 @@
 # Documentation map
 
-This repository is documentation-first. The current protocol is **v4.0 Transactional Atomic Markdown Memory**; v3.1 is retained as the previous stable generation.
+This repository is documentation-first. The current protocol is **v4.1 Temporal,
+Traceable Atomic Markdown Memory**; v4.0 and v3.1 remain supported.
 
 ## Canonical reading paths
 
 | Audience | Start with | Then read |
 |---|---|---|
-| New user copying a vault | [`../README.md`](../README.md) | [`../examples/v4-minimal-vault/`](../examples/v4-minimal-vault/), then [`../SPEC-v4.md`](../SPEC-v4.md) as needed |
-| Implementer building v4 tools | [`../SPEC-v4.md`](../SPEC-v4.md) | [`../examples/v4-minimal-vault/tools/`](../examples/v4-minimal-vault/tools/), [`../tests/`](../tests/) |
+| New user copying a vault | [`../README.md`](../README.md) | [`../examples/v4.1-minimal-vault/`](../examples/v4.1-minimal-vault/), then [`../SPEC-v4.1.md`](../SPEC-v4.1.md) |
+| Implementer building v4.1 tools | [`../SPEC-v4.1.md`](../SPEC-v4.1.md) | [`../examples/v4.1-minimal-vault/tools/`](../examples/v4.1-minimal-vault/tools/), [`../tests/eval/`](../tests/eval/) |
+| v4.0 user upgrading | [`../migration-v4.1.md`](../migration-v4.1.md) | [`../examples/v4.1-minimal-vault/AGENTS.md`](../examples/v4.1-minimal-vault/AGENTS.md) |
 | v3 user migrating to v4 | [`../migration-v4.md`](../migration-v4.md) | [`../examples/v4-minimal-vault/`](../examples/v4-minimal-vault/) |
 | v3 user staying on v3 | [`../SPEC-v3.md`](../SPEC-v3.md) | [`../examples/v3-minimal-vault/`](../examples/v3-minimal-vault/) |
 | Existing v2 user | [`../migration-v3.md`](../migration-v3.md) | [`../examples/v3-minimal-vault/`](../examples/v3-minimal-vault/) |
@@ -19,11 +21,16 @@ This repository is documentation-first. The current protocol is **v4.0 Transacti
 | Document | Status | Role |
 |---|---|---|
 | [`../README.md`](../README.md) | Current | Landing page and short orientation |
-| [`../SPEC-v4.md`](../SPEC-v4.md) | **Current, normative** | Stable v4.0 compatibility contract |
+| [`../SPEC-v4.1.md`](../SPEC-v4.1.md) | **Current, normative** | Stable v4.1 compatibility contract |
+| [`../SPEC-v4.md`](../SPEC-v4.md) | Previous stable, normative | Stable v4.0 compatibility contract |
 | [`../SPEC-v3.md`](../SPEC-v3.md) | Previous stable, normative | Stable v3.1 compatibility contract |
-| [`../examples/v4-minimal-vault/README.md`](../examples/v4-minimal-vault/README.md) | **Current** | Working v4.0 reference implementation |
+| [`../examples/v4.1-minimal-vault/README.md`](../examples/v4.1-minimal-vault/README.md) | **Current** | Working v4.1 reference implementation |
+| [`../examples/v4-minimal-vault/README.md`](../examples/v4-minimal-vault/README.md) | Previous stable | Preserved v4.0 reference implementation |
 | [`../examples/v3-minimal-vault/README.md`](../examples/v3-minimal-vault/README.md) | Previous stable | Working v3.1 reference implementation |
 | [`../migration-v4.md`](../migration-v4.md) | Current | Manual v3-to-v4 migration guide |
+| [`../migration-v4.1.md`](../migration-v4.1.md) | Current | Additive v4.0-to-v4.1 migration |
+| [`../examples/v4.1-minimal-vault/AGENTS.md`](../examples/v4.1-minimal-vault/AGENTS.md) | Current | Bootstrap-first agent workflow and extraction template |
+| [`../tests/eval/README.md`](../tests/eval/README.md) | Current | Offline exact-query evaluation gate |
 | [`../migration-v3.md`](../migration-v3.md) | Current | Manual v2-to-v3 migration checklist |
 | [`../automation-guide.md`](../automation-guide.md) | Current, optional | Automation patterns |
 | [`../plugin-guide.md`](../plugin-guide.md) | Current, optional | Host-agent command/skill packaging pattern |
@@ -36,9 +43,8 @@ This repository is documentation-first. The current protocol is **v4.0 Transacti
 ## Maintenance rules
 
 1. Keep `README.md` short and navigational; move deep explanations to focused docs.
-2. Treat `SPEC-v4.md` as the source of truth for v4 behavior; treat `SPEC-v3.md` as the source of truth for v3 behavior.
-3. Mark v2 content as legacy and v3 content as previous stable wherever they appear.
+2. Treat `SPEC-v4.1.md` as the current contract. Preserve `SPEC-v4.md` and `SPEC-v3.md` for their versioned behavior.
+3. Mark v2 as legacy and v3/v4.0 as previous stable; do not rewrite their reference data.
 4. Avoid adding new top-level guides unless they are broadly useful.
-5. When a guide describes optional tooling, state whether it is required for v4 compatibility. Most integrations are optional.
+5. When a guide describes optional tooling, state whether it is required for v4.1 compatibility. Most integrations are optional.
 6. Do not bulk-refresh date examples unless the semantic guidance changes.
-

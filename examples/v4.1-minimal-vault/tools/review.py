@@ -128,26 +128,6 @@ def load_proposal(root: Path, prop_id: str) -> tuple[Path | None, dict[str, Any]
     return None, {}
 
 
-def update_proposal_status(prop_path: Path, prop_data: dict[str, Any],
-                            verdict: str, reviewer_id: str) -> None:
-    """Update proposal status and approvals after a review verdict."""
-    updated = dict(prop_data)
-    if verdict == "approved":
-        approvals = list(updated.get("approvals") or [])
-        if reviewer_id not in approvals:
-            approvals.append(reviewer_id)
-        updated["approvals"] = approvals
-        # Check if fully approved
-        required = updated.get("required_approvals", 1)
-        if len(approvals) >= required:
-            updated["status"] = "approved"
-    elif verdict == "rejected":
-        updated["status"] = "rejected"
-    elif verdict == "changes_requested":
-        updated["status"] = "changes_requested"
-    write_markdown(prop_path, updated, _proposal_body(updated))
-
-
 def _proposal_body(data: dict[str, Any]) -> str:
     body = f"# Proposal: {data.get('title')}\n\n"
     body += f"Status: **{data.get('status')}** | Namespace: `{data.get('namespace')}` | Proposer: `{data.get('proposer_id')}`\n"

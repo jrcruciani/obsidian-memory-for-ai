@@ -4,6 +4,25 @@
 
 ---
 
+## Sidecar semantic index (deliberately outside the protocol)
+
+A private experiment could build a disposable semantic index alongside a
+vault. It must never become canonical or alter the protocol's offline,
+Python/PyYAML-only tools. v4.1 deliberately excludes embeddings, vector stores,
+and a running retrieval service: at this small, owner-controlled scale, start
+with a capable agent iterating over lexical queries and inspectable files.
+
+Letta's [*Benchmarking AI Agent Memory: Is a Filesystem All You Need?*](https://www.letta.com/blog/benchmarking-ai-agent-memory/)
+reports competitive results for an agent using file-oriented tools and
+iterative queries versus specialized memory tooling, emphasizing the agent's
+ability to use its tools. **Caveat:** that experiment also used semantic
+`search_files` and embedded files; it is not evidence that grep alone always
+matches semantic retrieval, nor a benchmark of this repository.
+Measure a sidecar against this vault's deterministic baseline before accepting
+its complexity, and keep any such experiment outside the protocol.
+
+---
+
 ## 🔭 Horizon Strip — Visual task + event timeline at session start
 
 **What it does:** Generates a compact visual timeline at the beginning of every memory load, showing your upcoming tasks *and* time-blocked events (trips, deadlines, meetings) sorted by date. You see at a glance what's urgent and when you're actually available.

@@ -1,8 +1,17 @@
 {
   "goal_id": "v4.1-memory-protocol",
-  "status": "in_progress",
-  "phase": 5,
+  "status": "completed",
+  "phase": 6,
   "baseline": "62 tests pass; v3/v4 lint and deterministic rebuilds unchanged",
-  "completed": ["orientation", "temporal facts", "lineage and trust", "aliases and search", "bootstrap", "staleness and consolidation", "JSON CLIs and agent guidance", "evaluations and CI"],
-  "deferred": ["optional LongMemEval adapter"]
+  "completed": ["orientation", "temporal facts", "lineage and trust", "aliases and search", "bootstrap", "staleness and consolidation", "JSON CLIs and agent guidance", "evaluations and CI", "documentation and final gates"],
+  "deferred": ["optional LongMemEval adapter"],
+  "verification": {
+    "python": "3.11",
+    "unit_tests": 152,
+    "offline_evaluations": 21,
+    "byte_identical_artifacts": 18,
+    "bootstrap_chars": 966,
+    "bootstrap_budget": 6000,
+    "clean_consolidation_drafts": 0
+  }
 }
