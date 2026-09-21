@@ -1,0 +1,15 @@
+type: object
+required: [type, transaction_id, idempotency_key, agent_id, created_at, status, ops]
+properties:
+  type: { const: transaction }
+  transaction_id: { type: string, pattern: "^txn-[a-z0-9][a-z0-9_-]*$" }
+  idempotency_key: { type: string }
+  agent_id: { type: string }
+  created_at: { type: string, format: date-time }
+  status:
+    enum: [pending, staging, committed, failed, rolled_back, idempotent_skip]
+  ops: { type: array, items: { type: object } }
+  expected_revision: { type: [string, "null"] }
+  committed_revision: { type: [string, "null"] }
+  failure_reason: { type: [string, "null"] }
+  committed_at: { type: [string, "null"], format: date-time }

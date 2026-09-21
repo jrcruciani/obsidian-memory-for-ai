@@ -1,0 +1,42 @@
+# Namespace and role policy for v4 proposal governance.
+#
+# namespaces:  define which agent roles are permitted to propose
+#              and review within a given scope, and how many
+#              approvals are required before a proposal can be applied.
+#
+# agents:      declare every agent identity used in this vault with
+#              its display name and role list.
+#
+# Roles:
+#   proposer  — may open new proposals in allowed namespaces.
+#   reviewer  — may approve, reject, or request changes on proposals
+#               in allowed namespaces. Must not approve own proposals.
+#   admin     — may propose and review in any namespace.
+
+namespaces:
+  - id: facts
+    description: Changes to memory/facts/** (create, update, archive).
+    required_approvals: 1
+    allowed_proposers:
+      - agent-local-1234abcd
+      - agent-test-1234abcd
+    allowed_reviewers:
+      - agent-human-00000001
+  - id: schema
+    description: Changes to memory/schema/** (new predicates, entities).
+    required_approvals: 1
+    allowed_proposers:
+      - agent-local-1234abcd
+    allowed_reviewers:
+      - agent-human-00000001
+
+agents:
+  - id: agent-human-00000001
+    display_name: Elena Voss (human reviewer)
+    roles: [reviewer, admin]
+  - id: agent-local-1234abcd
+    display_name: Local AI assistant
+    roles: [proposer]
+  - id: agent-test-1234abcd
+    display_name: Test agent
+    roles: [proposer]

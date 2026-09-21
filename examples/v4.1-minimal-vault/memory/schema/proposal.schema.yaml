@@ -1,0 +1,18 @@
+type: object
+required: [type, proposal_id, namespace, proposer_id, title, status, created_at, content_hash, ops]
+properties:
+  type: { const: proposal }
+  proposal_id: { type: string, pattern: "^prop-[a-z0-9][a-z0-9_-]*$" }
+  namespace: { type: string }
+  proposer_id: { type: string }
+  title: { type: string }
+  status:
+    enum: [draft, proposed, changes_requested, approved, rejected, conflict, applied]
+  created_at: { type: string, format: date-time }
+  content_hash: { type: string, pattern: "^sha256:[0-9a-f]{64}$" }
+  required_approvals: { type: integer, minimum: 1 }
+  approvals: { type: array, items: { type: string } }
+  ops: { type: array, items: { type: object } }
+  applied_at: { type: [string, "null"], format: date-time }
+  transaction_id: { type: [string, "null"] }
+  rejection_reason: { type: [string, "null"] }

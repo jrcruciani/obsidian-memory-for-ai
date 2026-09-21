@@ -1,0 +1,17 @@
+#!/usr/bin/env sh
+# Pre-commit hook: lint and check for generated file drift.
+set -eu
+VAULT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+if [ -x "$VAULT_ROOT/.venv/bin/python" ]; then
+    PYTHON="$VAULT_ROOT/.venv/bin/python"
+else
+    PYTHON="python3"
+fi
+cd "$VAULT_ROOT"
+"$PYTHON" tools/lint.py
+MEMORY_TODAY="${MEMORY_TODAY:-$(date +%Y-%m-%d)}" "$PYTHON" tools/rebuild_views.py
+"$PYTHON" tools/rebuild_indexes.py
+git diff --exit-code -- memory/_views memory/_indexes || {
+    echo "Generated files drifted — please commit the updated views/indexes." >&2
+    exit 1
+}
