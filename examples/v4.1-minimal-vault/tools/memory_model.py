@@ -168,3 +168,27 @@ def names(entry: dict[str, Any]) -> set[str]:
 def resolve(root: Path, name: str) -> list[str]:
     term = fold(name)
     return sorted(key for key, entry in entities(root).items() if term in names(entry))
+
+
+def stale_facts(root: Path) -> list[tuple[Path, str]]:
+    threshold = config(root, "version.yaml").get("stale_after_days", 365)
+    if isinstance(threshold, bool) or not isinstance(threshold, int) or threshold < 0:
+        raise ValueError("stale_after_days must be a non-negative integer")
+    date = today()
+    cutoff = date - dt.timedelta(days=threshold)
+    rows = []
+    for path, data in records(root, "memory/facts", "fact"):
+        if not visible(data):
+            continue
+        reasons = []
+        review_after = parse_date(data.get("review_after"))
+        if review_after and review_after < date:
+            reasons.append(f"review_after {review_after} is before {date}")
+        confirmed = parse_date(data.get("last_confirmed"))
+        if confirmed is None:
+            confirmed = parse_datetime(data.get("created_at") or data.get("recorded_at")).date()
+        if confirmed < cutoff:
+            reasons.append(f"last_confirmed/created_at {confirmed} is older than {threshold} days")
+        if reasons:
+            rows.append((path, "; ".join(reasons)))
+    return rows

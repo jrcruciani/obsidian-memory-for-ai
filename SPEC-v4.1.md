@@ -388,3 +388,36 @@ every heading, newline, and the final line:
 budget fails explicitly. All date math honors `MEMORY_TODAY`.
 `rebuild-views.sh` generates `_views/bootstrap.md`; `query.sh bootstrap`
 computes the same output when the file is absent or stale.
+
+## 11. Staleness and consolidation
+
+Optional fact fields `last_confirmed` and `review_after` are dates or null.
+`lint.py --stale` reports current, non-retracted facts whose review deadline
+is before `MEMORY_TODAY`, or whose last confirmation is older than
+`stale_after_days` (default 365) in `version.yaml`. The confirmation fallback
+is `created_at`, then legacy `recorded_at`. Reports exit 0 unless `--strict`;
+malformed input still fails. Normal lint's `--strict` also treats warnings
+as failures. `_views/stale.md` uses the same policy.
+
+Events may carry optional `asserts: [{entity, predicate, value}]`. These are
+claims, not executable instructions or automatically accepted facts. Event
+files remain append-only.
+
+`consolidate.py` detects duplicate current facts, newer contradictory
+structured assertions in a fact's `derived_from` events, expired facts in
+the current slot, and dangling wikilinks/evidence references. It creates
+`status: draft`, `namespace: facts` proposals using
+`agent-consolidate-00000001`. A key derived from detection type and sorted
+paths makes repeated runs idempotent. `--dry-run` creates nothing.
+
+These drafts contain diagnoses and **empty operations**, not guessed fixes.
+Review and apply refuse empty diagnostic proposals. Create a new repair
+proposal using an authorized proposer to resolve the issue. The built-in
+diagnostic identity may emit these non-executable drafts even in a migrated
+vault without a role entry; it gains no authority to apply changes.
+Consolidation never writes facts, events, sources, or derived artifacts.
+
+Legacy `_inbox` compaction on v4.1 uses the transaction path and the same
+trust policy. Value-changing `update_fact` operations must become
+`supersede_fact`; ended history is retained, not automatically archived.
+Legacy v4.0 vaults retain their original compaction behavior.

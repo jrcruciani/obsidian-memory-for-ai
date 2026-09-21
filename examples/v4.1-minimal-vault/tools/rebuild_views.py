@@ -167,6 +167,11 @@ def build_contradictions(root: Path, rows: list[tuple[Path, dict[str, Any]]]) ->
 
 
 def build_stale(root: Path, rows: list[tuple[Path, dict[str, Any]]], threshold_days: int = 180) -> None:
+    if enabled(root):
+        from memory_model import stale_facts
+        entries = [f"- `{rel(path, root)}` — {reason}" for path, reason in stale_facts(root)]
+        write(root / "memory/_views/stale.md", "# Stale facts\n\n" + "\n".join(entries or ["No stale facts detected."]))
+        return
     cutoff = today() - dt.timedelta(days=threshold_days)
     lines = ["# Stale facts", "", f"Policy: last_reviewed before {cutoff.isoformat()} ({threshold_days}+ days old).", ""]
     found = False

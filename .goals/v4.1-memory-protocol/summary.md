@@ -23,3 +23,10 @@ stale-index diagnostics, and canonical query parity (including empty results).
 Bootstrap counts every character, including headings and its self-counting
 footer. Exact-limit and one-character-over-limit tests verify the real output
 budget. There are now 52 v4.1 tests (114 total).
+
+Phase 4 implements all four consolidation detections, including newer
+structured event assertions. Each issue emits exactly one idempotent draft,
+with no guessed operations and no canonical edits. Stale reporting and views
+share a configurable semantic-age policy. Legacy inbox compaction on a v4.1
+vault now routes through transactions and cannot bypass external-data review.
+67 v4.1 tests cover this phase (129 total); the clean vault produces no drafts.

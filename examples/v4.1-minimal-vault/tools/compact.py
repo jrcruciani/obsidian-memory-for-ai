@@ -167,6 +167,10 @@ def apply_operation(root: Path, path: Path, assume_yes: bool) -> tuple[bool, boo
     if not confirm(f"Apply {op} {data.get('operation_id')}?", assume_yes):
         return False, False
 
+    from memory_model import enabled
+    if enabled(root):
+        return apply_v41_operation(root, path, data, body)
+
     if op == "create_fact":
         conflict = apply_create_or_update(root, data, update=False)
     elif op == "update_fact":
@@ -186,6 +190,39 @@ def apply_operation(root: Path, path: Path, assume_yes: bool) -> tuple[bool, boo
         return False, True
 
     mark_operation(root, path, data, body, "applied")
+    print(f"Applied: {rel(path, root)}")
+    return True, False
+
+
+def apply_v41_operation(root: Path, path: Path, data: dict[str, Any], body: str) -> tuple[bool, bool]:
+    import transact
+
+    payload = data.get("payload")
+    if not isinstance(payload, dict):
+        print(f"ERROR: {rel(path, root)}: operation requires payload", file=sys.stderr)
+        return False, True
+    op = dict(payload, op="create_event" if data["op"] == "add_event" else data["op"])
+    if op["op"] == "create_event":
+        op["event_id"] = payload.get("id")
+    if data.get("precondition_hash"):
+        op["precondition_hash"] = data["precondition_hash"]
+    try:
+        meta = transact.begin(root, f"compact-{data['operation_id']}", data["agent_id"])
+        if meta["status"] == "committed":
+            print(f"Already applied: {rel(path, root)}")
+            return False, False
+        meta["ops"] = [op]
+        writes = transact.prepare_operations(root, meta)
+        if data.get("target_path") not in writes:
+            raise ValueError("operation target_path does not match its canonical payload path")
+        receipt = dict(data, status="applied", applied_at=iso(now_utc()), transaction_id=meta["transaction_id"])
+        writes[f"memory/_ops/applied/{data['operation_id']}.md"] = transact.markdown(receipt, body)
+        writes[rel(path, root)] = None
+        transact.validate_candidate(root, writes)
+        transact.publish(root, meta, writes)
+    except (OSError, ValueError, yaml.YAMLError) as exc:
+        print(f"ERROR: {rel(path, root)}: {exc}", file=sys.stderr)
+        return False, True
     print(f"Applied: {rel(path, root)}")
     return True, False
 
@@ -218,6 +255,7 @@ def archive_expired_facts(root: Path, assume_yes: bool) -> int:
 
 
 def main() -> int:
+    from memory_model import enabled
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--yes", action="store_true", help="Apply without prompting")
     parser.add_argument("--dry-run", action="store_true", help="Report what would be done without changes")
@@ -246,12 +284,12 @@ def main() -> int:
             conflicts += 1
 
     # Archive expired facts
-    if not args.dry_run:
+    if not args.dry_run and not enabled(root):
         archive_expired_facts(root, args.yes)
 
     print(f"Applied operations: {applied}")
     print(f"Operation conflicts: {conflicts}")
-    return 0
+    return 1 if conflicts and enabled(root) else 0
 
 
 if __name__ == "__main__":

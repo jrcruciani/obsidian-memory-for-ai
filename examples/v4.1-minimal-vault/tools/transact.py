@@ -226,9 +226,11 @@ def prepare_operations(root: Path, meta: dict[str, Any], reviewed: bool = False)
             data["valid_until"] = None
             data["supersedes"] = history
             data["id"] = f"fact-{entity}-{predicate}-{start}-{hashlib.sha256((meta['transaction_id'] + str(index)).encode()).hexdigest()[:8]}"
-        for field in (*FACT_FIELDS, "sources"):
+        for field in (*FACT_FIELDS, "sources", "recorded_at", "created_at", "last_reviewed", "tags", "decay"):
             if field in op:
                 data[field] = op[field]
+        if "id" in op and kind == "create_fact":
+            data["id"] = op["id"]
         if enabled(root):
             data["agent_id"] = meta["agent_id"]
             confidence(data.get("confidence"))

@@ -37,6 +37,23 @@ def validate_aliases(root: Path) -> list[Finding]:
     return findings
 
 
+def validate_assertions(root: Path, entities: set[str], predicates: set[str]) -> list[Finding]:
+    findings = []
+    for path, data in records(root, "memory/events", "event"):
+        assertions = data.get("asserts", [])
+        if not isinstance(assertions, list):
+            findings.append(Finding("ERROR", path, "asserts must be a list"))
+            continue
+        for claim in assertions:
+            if not isinstance(claim, dict) or not {"entity", "predicate", "value"} <= claim.keys():
+                findings.append(Finding("ERROR", path, "asserts items require entity, predicate, value"))
+            elif not isinstance(claim["entity"], str) or claim["entity"] not in entities:
+                findings.append(Finding("ERROR", path, "asserts contains an unknown entity"))
+            elif not isinstance(claim["predicate"], str) or claim["predicate"] not in predicates:
+                findings.append(Finding("ERROR", path, "asserts contains an unknown predicate"))
+    return findings
+
+
 def validate_facts(root: Path, facts: list[tuple[Path, dict[str, Any]]]) -> list[Finding]:
     findings = []
     grouped: dict[tuple[str, str], list[tuple[Path, dict[str, Any]]]] = defaultdict(list)

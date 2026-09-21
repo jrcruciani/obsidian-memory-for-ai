@@ -417,6 +417,118 @@ class V41Test(unittest.TestCase):
         self.assertIn("## Active entities", text)
         self.assertIn("generated 2026-07-16", text)
 
+    def test_stale_review_after_report_and_strict(self):
+        self.edit(BASE, review_after="2026-09-20")
+        self.assertIn(BASE, self.run_tool("lint", "--stale").stdout)
+        self.run_tool("lint", "--stale", "--strict", ok=False)
+
+    def test_stale_last_confirmed_and_configurable_age(self):
+        marker = self.vault / "memory/schema/version.yaml"
+        marker.write_text(marker.read_text().replace("365", "30"))
+        self.edit(BASE, last_confirmed="2026-09-20")
+        text = self.run_tool("lint", "--stale").stdout
+        self.assertNotIn(BASE, text)
+        self.assertIn("role.md", text)
+
+    def test_stale_created_fallback_boundary(self):
+        self.edit(BASE, created_at="2025-09-21T00:00:00Z")
+        self.assertNotIn(BASE, self.run_tool("lint", "--stale").stdout)
+        self.edit(BASE, created_at="2025-09-20T00:00:00Z")
+        self.assertIn(BASE, self.run_tool("lint", "--stale").stdout)
+
+    def test_stale_does_not_report_history(self):
+        self.env["MEMORY_TODAY"] = "2030-01-01"
+        self.assertNotIn("role/2026-03-15.md", self.run_tool("lint", "--stale").stdout)
+
+    def consolidation_drafts(self) -> list[Path]:
+        return [path for path in (self.vault / "memory/_proposals").glob("*.md")
+                if self.data(str(path.relative_to(self.vault))).get("proposer_id") == "agent-consolidate-00000001"]
+
+    def assert_one_draft(self, title: str) -> None:
+        before = {p.relative_to(self.vault): p.read_bytes() for p in (self.vault / "memory").rglob("*.md")
+                  if "_proposals" not in p.parts}
+        self.run_tool("consolidate")
+        drafts = self.consolidation_drafts()
+        self.assertEqual(len(drafts), 1)
+        data = self.data(str(drafts[0].relative_to(self.vault)))
+        self.assertEqual(data["status"], "draft")
+        self.assertEqual(data["namespace"], "facts")
+        self.assertEqual(data["ops"], [])
+        self.assertIn(title, data["title"])
+        first = drafts[0].read_bytes()
+        self.run_tool("consolidate")
+        self.assertEqual(len(self.consolidation_drafts()), 1)
+        self.assertEqual(first, drafts[0].read_bytes())
+        for path, content in before.items():
+            self.assertEqual((self.vault / path).read_bytes(), content)
+
+    def test_consolidate_clean_vault(self):
+        self.assertIn("No consolidation issues", self.run_tool("consolidate").stdout)
+        self.assertEqual(self.consolidation_drafts(), [])
+
+    def test_consolidate_duplicate_current(self):
+        path = self.vault / "memory/facts/elena-voss/base--duplicate.md"
+        shutil.copyfile(self.vault / BASE, path)
+        self.edit(str(path.relative_to(self.vault)), id="fact-duplicate", value="Paris")
+        self.assert_one_draft("Multiple current facts")
+
+    def test_consolidate_newer_assertion(self):
+        self.edit(BASE, derived_from=[EVIDENCE])
+        # A new fixture event is append-only; it carries a conflicting base claim.
+        relative = "memory/events/2026-09-01/base-claim.md"
+        path = self.vault / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("---\ntype: event\nid: event-base-claim\nsummary: New base claim\n"
+                        "occurred_at: 2026-09-01T00:00:00Z\n"
+                        "asserts:\n  - entity: elena-voss\n    predicate: base\n    value: Paris\n---\n")
+        self.edit(BASE, derived_from=[relative])
+        self.assert_one_draft("Newer evidence contradicts")
+
+    def test_consolidate_expired_current_slot(self):
+        self.edit(BASE, valid_until="2026-08-01")
+        self.assert_one_draft("Expired fact")
+
+    def test_consolidate_dangling_evidence(self):
+        self.edit(BASE, derived_from=["sources/missing.md"])
+        self.assert_one_draft("Dangling references")
+
+    def test_consolidate_dangling_wikilink(self):
+        path = self.vault / BASE
+        path.write_text(path.read_text() + "\n[[unknown-note]]\n")
+        self.assert_one_draft("Dangling references")
+
+    def test_consolidate_dry_run_no_writes(self):
+        self.edit(BASE, derived_from=["sources/missing.md"])
+        self.assertIn("Dangling", self.run_tool("consolidate", "--dry-run").stdout)
+        self.assertEqual(self.consolidation_drafts(), [])
+
+    def test_diagnostic_draft_cannot_be_reviewed_or_applied(self):
+        self.edit(BASE, derived_from=["sources/missing.md"])
+        self.run_tool("consolidate")
+        prop = self.data(str(self.consolidation_drafts()[0].relative_to(self.vault)))["proposal_id"]
+        self.run_tool("review", "approve", "--proposal-id", prop, "--reviewer", ADMIN, ok=False)
+        self.run_tool("propose", "apply", "--proposal-id", prop, "--yes", ok=False)
+
+    def test_malformed_event_asserts_fails_lint(self):
+        self.edit(EVIDENCE, asserts=[{"entity": "elena-voss"}])
+        self.assertIn("asserts items require", self.run_tool("lint", ok=False).stdout)
+
+    def test_event_asserts_unknown_entity_fails_lint(self):
+        self.edit(EVIDENCE, asserts=[{"entity": "ghost", "predicate": "role", "value": "x"}])
+        self.run_tool("lint", ok=False)
+
+    def test_compact_cannot_bypass_external_review(self):
+        folder = self.vault / "memory/_inbox/agent-local-1234abcd"
+        folder.mkdir(parents=True)
+        data = {"type": "operation", "operation_id": "op-external-test", "op": "create_fact",
+                "agent_id": AGENT, "created_at": "2026-09-21T10:00:00Z", "status": "proposed",
+                "reason": "Fixture", "target_path": "memory/facts/elena-voss/tool.md",
+                "payload": {"type": "fact", "entity": "elena-voss", "predicate": "tool",
+                            "value": "Untrusted notebook", "trust": "external", "recorded_at": "2026-09-21T10:00:00Z"}}
+        (folder / "external.md").write_text("---\n" + yaml.safe_dump(data) + "---\n")
+        self.assertIn("propose.py", self.run_tool("compact", "--yes", ok=False).stderr)
+        self.assertFalse((self.vault / "memory/facts/elena-voss/tool.md").exists())
+
 
 if __name__ == "__main__":
     unittest.main()
