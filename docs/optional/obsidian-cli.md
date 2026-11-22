@@ -71,7 +71,7 @@ export PATH="$PATH:/Applications/Obsidian.app/Contents/MacOS"
 If your terminal is inside the vault folder, it's used automatically. Otherwise:
 
 ```bash
-obsidian vault=jlrcodex search query="example"
+obsidian vault=my-vault search query="example"
 ```
 
 ---
