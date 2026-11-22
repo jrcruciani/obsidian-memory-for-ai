@@ -1,0 +1,72 @@
+type: fact
+required:
+  - type
+  - id
+  - entity
+  - predicate
+  - value
+  - status
+  - observed_at
+  - assertion
+  - trust
+  - last_confirmed
+fields:
+  type:
+    kind: str
+    enum:
+      - fact
+  id:
+    kind: str
+  entity:
+    kind: str
+  predicate:
+    kind: str
+  value:
+    kind: any
+  status:
+    kind: str
+    enum:
+      - active
+      - superseded
+      - retracted
+  valid_from:
+    kind: date
+    nullable: true
+  valid_until:
+    kind: date
+    nullable: true
+  observed_at:
+    kind: datetime
+  confidence:
+    kind: confidence
+    nullable: true
+  assertion:
+    kind: str
+    enum:
+      - stated
+      - observed
+      - inferred
+  trust:
+    kind: str
+    enum:
+      - owner
+      - agent
+      - external
+  derived_from:
+    kind: list
+  supersedes:
+    kind: str
+    nullable: true
+  pinned:
+    kind: bool
+  last_confirmed:
+    kind: date
+  review_after:
+    kind: date
+    nullable: true
+  retracted_at:
+    kind: datetime
+    nullable: true
+  retraction_reason:
+    kind: str
+    nullable: true

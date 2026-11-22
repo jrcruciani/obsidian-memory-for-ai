@@ -2,3 +2,5 @@
 *.pdf
 .venv/
 __pycache__/
+*.pyc
+factory/_staging/

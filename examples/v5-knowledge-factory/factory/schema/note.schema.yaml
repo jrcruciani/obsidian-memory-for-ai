@@ -1,0 +1,27 @@
+type: note
+required:
+  - type
+  - id
+  - title
+  - kind
+fields:
+  type:
+    kind: str
+    enum:
+      - note
+  id:
+    kind: str
+  title:
+    kind: str
+  kind:
+    kind: str
+    enum:
+      - person
+      - project
+      - context
+      - insight
+      - general
+  entities:
+    kind: list
+  authoritative:
+    kind: bool

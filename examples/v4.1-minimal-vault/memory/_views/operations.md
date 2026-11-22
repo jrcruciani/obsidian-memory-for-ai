@@ -1,3 +1,0 @@
-# Operations
-
-No operations detected.

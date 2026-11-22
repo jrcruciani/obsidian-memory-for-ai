@@ -1,0 +1,78 @@
+type: signal
+required:
+  - type
+  - id
+  - kind
+  - severity
+  - status
+  - created_at
+  - emitted_by
+  - summary
+  - target_namespace
+fields:
+  type:
+    kind: str
+    enum:
+      - signal
+  id:
+    kind: str
+  kind:
+    kind: str
+    enum:
+      - gap
+      - contradiction
+      - friction
+      - stale
+      - observation
+      - broken_reference
+      - uncurated_claim
+  severity:
+    kind: str
+    enum:
+      - low
+      - medium
+      - high
+  status:
+    kind: str
+    enum:
+      - open
+      - proposed
+      - resolved
+      - dismissed
+  created_at:
+    kind: datetime
+  emitted_by:
+    kind: str
+  summary:
+    kind: str
+  target_namespace:
+    kind: str
+    enum:
+      - entities
+      - facts
+      - events
+      - skills
+      - guidance
+      - decisions
+      - mixed
+  entities:
+    kind: list
+  related_paths:
+    kind: list
+  evidence:
+    kind: list
+  idempotency_key:
+    kind: str
+    nullable: true
+  proposal_id:
+    kind: str
+    nullable: true
+  resolved_at:
+    kind: datetime
+    nullable: true
+  resolved_by_receipt:
+    kind: str
+    nullable: true
+  resolution_note:
+    kind: str
+    nullable: true

@@ -1,0 +1,14 @@
+type: entity-registry
+required:
+  - type
+  - id
+  - entities
+fields:
+  type:
+    kind: str
+    enum:
+      - entity-registry
+  id:
+    kind: str
+  entities:
+    kind: list

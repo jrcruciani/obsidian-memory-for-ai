@@ -1,0 +1,46 @@
+name: knowledge-factory-v5
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  validate-knowledge-factory:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Run full test suite & eval gate on bare Python stdlib (zero-dep YAML fallback)
+        env:
+          KF_NO_PYYAML: "1"
+        run: |
+          python -m unittest discover -s tests -v
+          python tests/eval/run_eval.py
+
+      - name: Install optional PyYAML dependency
+        run: python -m pip install -r examples/v5-knowledge-factory/requirements.txt
+
+      - name: Strict lint v5.0 reference vault
+        run: KF_TODAY=2026-10-15 python tools/kf.py --vault examples/v5-knowledge-factory lint --strict
+
+      - name: Deterministic double rebuild & zero-drift gate
+        run: |
+          KF_TODAY=2026-10-15 python tools/kf.py --vault examples/v5-knowledge-factory rebuild
+          git diff --exit-code -- examples/v5-knowledge-factory/_generated
+          KF_TODAY=2026-10-15 python tools/kf.py --vault examples/v5-knowledge-factory rebuild
+          git diff --exit-code -- examples/v5-knowledge-factory/_generated
+          test -z "$(git ls-files --others --exclude-standard -- examples/v5-knowledge-factory/_generated)"
+
+      - name: Run full unittest suite with PyYAML
+        run: python -m unittest discover -s tests -v
+
+      - name: Run deterministic 26-contract offline query evaluations
+        run: python tests/eval/run_eval.py

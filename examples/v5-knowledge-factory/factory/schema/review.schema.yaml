@@ -1,0 +1,33 @@
+type: review
+required:
+  - type
+  - id
+  - proposal_id
+  - reviewer_id
+  - verdict
+  - created_at
+  - proposal_content_hash
+fields:
+  type:
+    kind: str
+    enum:
+      - review
+  id:
+    kind: str
+  proposal_id:
+    kind: str
+  reviewer_id:
+    kind: str
+  verdict:
+    kind: str
+    enum:
+      - approved
+      - rejected
+      - changes_requested
+  created_at:
+    kind: datetime
+  proposal_content_hash:
+    kind: str
+  comment:
+    kind: str
+    nullable: true

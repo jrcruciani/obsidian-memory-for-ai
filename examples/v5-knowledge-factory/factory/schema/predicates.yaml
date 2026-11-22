@@ -1,0 +1,23 @@
+predicates:
+  - id: role
+    description: Primary professional or operational role
+  - id: base
+    description: Primary geographic location
+  - id: employer
+    description: Employing institution or organization
+  - id: language
+    description: Preferred working language
+  - id: lead
+    description: Project or initiative lead entity
+  - id: collaborator
+    description: Collaborating person or organization
+  - id: primary-project
+    description: Primary active project
+  - id: primary-instrument
+    description: Primary analytical or software instrument
+  - id: publication-channel
+    description: Canonical publication venue or channel
+  - id: tool
+    description: "Tool, software, or apparatus used"
+  - id: status-summary
+    description: Concise operational status

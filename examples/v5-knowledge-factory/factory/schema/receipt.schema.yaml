@@ -1,0 +1,64 @@
+type: receipt
+required:
+  - type
+  - id
+  - mode
+  - status
+  - idempotency_key
+  - actor_id
+  - created_at
+  - ops
+  - touched_files
+fields:
+  type:
+    kind: str
+    enum:
+      - receipt
+  id:
+    kind: str
+  mode:
+    kind: str
+    enum:
+      - proposal_publish
+      - direct_transaction
+      - signal_triage
+      - migration
+      - rollback
+  status:
+    kind: str
+    enum:
+      - committed
+      - failed
+      - rolled_back
+  idempotency_key:
+    kind: str
+  actor_id:
+    kind: str
+  proposer_id:
+    kind: str
+    nullable: true
+  proposal_id:
+    kind: str
+    nullable: true
+  review_ids:
+    kind: list
+  resolved_signals:
+    kind: list
+  created_at:
+    kind: datetime
+  committed_at:
+    kind: datetime
+    nullable: true
+  expected_revision:
+    kind: str
+    nullable: true
+  parent_revision:
+    kind: str
+    nullable: true
+  ops:
+    kind: list
+  touched_files:
+    kind: list
+  failure_reason:
+    kind: str
+    nullable: true

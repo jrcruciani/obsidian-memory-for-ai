@@ -1,0 +1,6 @@
+spec_version: "5.0"
+protocol: knowledge-factory
+vault_name: Knowledge Factory Vault
+settings:
+  stale_after_days: 180
+  require_generated_clean: true
