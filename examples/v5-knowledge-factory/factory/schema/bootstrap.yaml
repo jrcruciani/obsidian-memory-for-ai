@@ -1,0 +1,28 @@
+default_profile: default
+lookback_days: 45
+profiles:
+  default:
+    budget_chars: 6000
+    sections:
+      - critical_guidance
+      - pinned_facts
+      - active_skills: 8
+      - recent_decisions: 5
+      - active_entities: 6
+      - recent_events: 8
+  executor:
+    budget_chars: 5000
+    sections:
+      - critical_guidance
+      - pinned_facts
+      - active_skills: 10
+      - recent_decisions: 5
+      - active_entities: 5
+  curator:
+    budget_chars: 6000
+    sections:
+      - open_signals: 12
+      - pending_proposals: 8
+      - stale_knowledge: 8
+      - recent_events: 10
+      - critical_guidance

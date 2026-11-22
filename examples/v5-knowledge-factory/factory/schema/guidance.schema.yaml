@@ -1,0 +1,77 @@
+type: guidance
+required:
+  - type
+  - id
+  - slug
+  - title
+  - status
+  - domain
+  - scope
+  - priority
+  - policy_rule
+  - trust
+  - observed_at
+  - last_confirmed
+fields:
+  type:
+    kind: str
+    enum:
+      - guidance
+  id:
+    kind: str
+  slug:
+    kind: str
+  title:
+    kind: str
+  status:
+    kind: str
+    enum:
+      - active
+      - superseded
+      - retracted
+  domain:
+    kind: str
+  scope:
+    kind: str
+    enum:
+      - executor
+      - curator
+      - reviewer
+      - all
+  priority:
+    kind: str
+    enum:
+      - critical
+      - high
+      - normal
+  policy_rule:
+    kind: str
+  anti_patterns:
+    kind: list
+  entities:
+    kind: list
+  derived_from:
+    kind: list
+  trust:
+    kind: str
+    enum:
+      - owner
+      - agent
+  observed_at:
+    kind: datetime
+  last_confirmed:
+    kind: date
+  review_after:
+    kind: date
+    nullable: true
+  supersedes:
+    kind: str
+    nullable: true
+  pinned:
+    kind: bool
+  retracted_at:
+    kind: datetime
+    nullable: true
+  retraction_reason:
+    kind: str
+    nullable: true

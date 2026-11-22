@@ -1,71 +1,114 @@
+eval_today: "2026-10-15"
 questions:
   - id: current-role
-    query: [tools/query.sh, facts, --entity, elena-voss, --predicate, role]
-    contains: ["role = Lead conservator and pigment researcher"]
-    not_contains: ["Art conservator"]
+    command: [tools/kf.py, query, facts, --entity, elena-voss, --predicate, role]
+    contains: ["elena-voss/role = Lead conservator and pigment researcher"]
+    not_contains: ["Art conservator and pigment researcher"]
+
   - id: historical-role
-    query: [tools/query.sh, facts, --entity, elena-voss, --predicate, role, --as-of, "2026-07-01"]
+    command: [tools/kf.py, query, facts, --entity, elena-voss, --predicate, role, --as-of, "2026-07-01"]
     contains: ["role/2026-03-15.md", "Art conservator and pigment researcher"]
+    not_contains: ["Lead conservator"]
+
   - id: boundary-role
-    query: [tools/query.sh, facts, --entity, elena-voss, --predicate, role, --as-of, "2026-07-15"]
-    contains: ["Lead conservator"]
+    command: [tools/kf.py, query, facts, --entity, elena-voss, --predicate, role, --as-of, "2026-07-15"]
+    contains: ["Lead conservator and pigment researcher"]
     not_contains: ["Art conservator"]
+
   - id: role-history
-    query: [tools/query.sh, facts, --entity, elena-voss, --predicate, role, --history]
-    contains: ["Art conservator", "Lead conservator", "observed:"]
-  - id: role-lineage
-    query: [tools/query.sh, facts, --why, elena-voss, role]
-    contains: ["memory/events/2026-07-15/role-confirmation.md", "Elena confirmed", "2026-07-15"]
-  - id: numeric-confidence
-    query: [tools/query.sh, facts, --trust, owner, --min-confidence, "0.9"]
-    contains: ["Lead conservator"]
-    not_contains: ["base ="]
+    command: [tools/kf.py, query, facts, --entity, elena-voss, --predicate, role, --history]
+    contains: ["Art conservator", "Lead conservator", "status=superseded", "status=active"]
+
+  - id: role-why-lineage
+    command: [tools/kf.py, query, why, fact, elena-voss, role]
+    contains: ["knowledge/events/2026-07-15/evt-role-confirmation.md", "receipt:", "supersedes: 1 prior version(s)"]
+
+  - id: external-evidence-why
+    command: [tools/kf.py, query, why, fact, concordance, primary-instrument]
+    contains: ["trust=external", "sources/2026-09-01-xrf-vendor-bulletin.md", "proposal:", "review:"]
+
+  - id: skill-why-factory-lineage
+    command: [tools/kf.py, query, why, skill, xrf-pigment-scan]
+    contains: ["knowledge/skills/xrf-pigment-scan.md", "proposal:", "review:", "signal:"]
+
+  - id: query-skill-by-trigger
+    command: [tools/kf.py, query, skills, --domain, conservation, --trigger, "xrf"]
+    contains: ["xrf-pigment-scan", "Non-Destructive XRF Pigment Scan"]
+
+  - id: query-guidance-executor
+    command: [tools/kf.py, query, guidance, --scope, executor]
+    contains: ["conservation-reporting-units", "external-evidence-verification"]
+    not_contains: ["curation-lineage-discipline"]
+
+  - id: query-guidance-curator
+    command: [tools/kf.py, query, guidance, --scope, curator]
+    contains: ["curation-lineage-discipline", "external-evidence-verification"]
+    not_contains: ["conservation-reporting-units"]
+
+  - id: query-decisions
+    command: [tools/kf.py, query, decisions]
+    contains: ["DEC-001-knowledge-factory-governance", "DEC-002-non-destructive-pigment-sampling"]
+
+  - id: query-open-signals
+    command: [tools/kf.py, query, signals, --status, open]
+    contains: ["azurite", "gap"]
+
+  - id: query-pending-proposals
+    command: [tools/kf.py, query, proposals, --status, proposed]
+    contains: ["guidance"]
+
+  - id: query-receipts-publish
+    command: [tools/kf.py, query, receipts, --mode, proposal_publish]
+    contains: ["proposal_publish/committed"]
+
+  - id: bootstrap-default
+    command: [tools/kf.py, bootstrap]
+    contains: ["# Knowledge Factory Bootstrap (default)", "Lead conservator", "generated 2026-10-15"]
+
+  - id: bootstrap-executor
+    command: [tools/kf.py, bootstrap, --profile, executor]
+    contains: ["# Knowledge Factory Bootstrap (executor)", "Available Skills", "xrf-pigment-scan"]
+    not_contains: ["Open Signals & Gaps"]
+
+  - id: bootstrap-curator
+    command: [tools/kf.py, bootstrap, --profile, curator]
+    contains: ["# Knowledge Factory Bootstrap (curator)", "Open Signals & Gaps", "Pending Proposals"]
+
   - id: current-base
-    query: [tools/query.sh, facts, --entity, elena-voss, --predicate, base]
-    expected_stdout: "memory/facts/elena-voss/base.md: base = Berlin, Germany\n"
-  - id: working-language
-    query: [tools/query.sh, facts, --entity, elena-voss, --predicate, language]
-    contains: ["language = German"]
-  - id: alias-search
-    query: [tools/query.sh, search, Voss]
-    contains: ["elena-voss/base = Berlin, Germany", "Lead conservator"]
-    not_contains: ["Art conservator"]
+    command: [tools/kf.py, query, facts, --entity, elena-voss, --predicate, base]
+    expected_stdout: "knowledge/facts/elena-voss/base.md: elena-voss/base = Berlin, Germany\n"
+
   - id: accent-resolution
-    query: [tools/query.sh, resolve, ÉLÉNA VOSS]
+    command: [tools/kf.py, query, resolve, "ÉLÉNA VOSS"]
     expected_stdout: "elena-voss\n"
+
   - id: id-resolution
-    query: [tools/query.sh, resolve, ELENA-VOSS]
+    command: [tools/kf.py, query, resolve, "ELENA-VOSS"]
     expected_stdout: "elena-voss\n"
-  - id: bootstrap
-    query: [tools/query.sh, bootstrap]
-    contains: ["# Bootstrap", "## Pinned facts", "Lead conservator", "generated 2026-09-21"]
-  - id: july-events
-    query: [tools/query.sh, events, --since, "2026-07-01", --until, "2026-07-31"]
-    contains: ["Concordance project reached", "Elena confirmed"]
-    not_contains: ["2026-05-11"]
-  - id: bounded-events
-    query: [tools/query.sh, events, --since, "2026-07-15", --until, "2026-07-15"]
-    contains: ["Elena confirmed"]
-    not_contains: ["2026-07-01"]
-  - id: empty-event-range
-    query: [tools/query.sh, events, --since, "2030-01-01"]
-    expected_stdout: "No events found.\n"
-  - id: project-graph
-    query: [tools/query.sh, graph, entity, concordance]
-    contains: ["marta-delvaux", "memory/facts/concordance/collaborator.md"]
-  - id: stable-id
-    query: [tools/query.sh, id, fact-elena-voss-base]
-    expected_stdout: "memory/facts/elena-voss/base.md: fact\n"
-  - id: json-facts
-    query: [tools/query.sh, facts, --entity, elena-voss, --predicate, base, --json]
-    contains: ['"ok": true', '"value": "Berlin, Germany"', '"facts":']
-  - id: no-operations
-    query: [tools/query.sh, operations]
-    expected_stdout: "No operations found.\n"
-  - id: unknown-entity
-    query: [tools/query.sh, resolve, nonexistent-person]
+
+  - id: unknown-entity-exits-2
+    command: [tools/kf.py, query, resolve, "nonexistent-entity-xyz"]
     exit_code: 2
     contains: ["No entity found"]
-  - id: external-evidence
-    query: [tools/query.sh, facts, --why, concordance, tool]
-    contains: ["Portable XRF analyzer", "trust: external", "sources/2026-09-01-equipment-note.md", "2026-09-01"]
+
+  - id: alias-search-multi-type
+    command: [tools/kf.py, query, search, "Voss"]
+    contains: ["[fact] elena-voss/base = Berlin, Germany", "[skill] xrf-pigment-scan"]
+    not_contains: ["Art conservator and pigment researcher"]
+
+  - id: project-graph
+    command: [tools/kf.py, query, graph, concordance]
+    contains: ["marta-delvaux", "knowledge/facts/concordance/collaborator.md", "skill-xrf-pigment-scan-v1"]
+
+  - id: july-events
+    command: [tools/kf.py, query, events, --since, "2026-07-01", --until, "2026-07-31"]
+    contains: ["Elena confirmed appointment as Lead Conservator"]
+    not_contains: ["2026-05-11"]
+
+  - id: empty-events
+    command: [tools/kf.py, query, events, --since, "2030-01-01"]
+    expected_stdout: "No events found.\n"
+
+  - id: json-envelope-contract
+    command: [tools/kf.py, query, facts, --entity, elena-voss, --predicate, base, --json]
+    contains: ['"ok": true', '"protocol_version": "5.0"', '"value": "Berlin, Germany"']

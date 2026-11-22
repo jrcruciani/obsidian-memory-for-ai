@@ -1,0 +1,104 @@
+roles:
+  executor:
+    description: "Task-executing agent: consumes living knowledge and captures signals/events; never mutates canonical knowledge directly."
+    can_capture: true
+    direct_transact: false
+    max_trust: agent
+  curator:
+    description: "Decoupled curation agent: scans drift, triages signals, and synthesizes review-gated proposals."
+    can_capture: true
+    direct_transact: false
+    max_trust: agent
+  reviewer:
+    description: "Independent governance reviewer: approves/rejects proposals and publishes approved changes."
+    can_capture: true
+    direct_transact: false
+    max_trust: owner
+  owner:
+    description: "Human vault owner: full authority including direct atomic transactions and external evidence approval."
+    can_capture: true
+    direct_transact: true
+    max_trust: owner
+namespaces:
+  - id: entities
+    required_approvals: 1
+    allowed_proposers:
+      - curator
+      - owner
+    allowed_reviewers:
+      - reviewer
+      - owner
+    external_requires_review: true
+  - id: facts
+    required_approvals: 1
+    allowed_proposers:
+      - curator
+      - owner
+    allowed_reviewers:
+      - reviewer
+      - owner
+    external_requires_review: true
+  - id: events
+    required_approvals: 1
+    allowed_proposers:
+      - executor
+      - curator
+      - owner
+    allowed_reviewers:
+      - reviewer
+      - owner
+    external_requires_review: false
+  - id: skills
+    required_approvals: 1
+    allowed_proposers:
+      - curator
+      - owner
+    allowed_reviewers:
+      - reviewer
+      - owner
+    external_requires_review: true
+  - id: guidance
+    required_approvals: 1
+    allowed_proposers:
+      - curator
+      - owner
+    allowed_reviewers:
+      - reviewer
+      - owner
+    external_requires_review: true
+  - id: decisions
+    required_approvals: 1
+    allowed_proposers:
+      - curator
+      - owner
+    allowed_reviewers:
+      - reviewer
+      - owner
+    external_requires_review: true
+  - id: mixed
+    required_approvals: 1
+    allowed_proposers:
+      - curator
+      - owner
+    allowed_reviewers:
+      - reviewer
+      - owner
+    external_requires_review: true
+agents:
+  - id: agent-owner-00000001
+    display_name: Vault Owner
+    roles:
+      - owner
+      - reviewer
+  - id: agent-reviewer-00000002
+    display_name: Governance Reviewer
+    roles:
+      - reviewer
+  - id: agent-curator-00000003
+    display_name: Knowledge Curator
+    roles:
+      - curator
+  - id: agent-executor-00000004
+    display_name: Task Executor
+    roles:
+      - executor

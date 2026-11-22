@@ -1,0 +1,28 @@
+type: event
+required:
+  - type
+  - id
+  - occurred_at
+  - recorded_by
+  - summary
+fields:
+  type:
+    kind: str
+    enum:
+      - event
+  id:
+    kind: str
+  occurred_at:
+    kind: datetime
+  recorded_by:
+    kind: str
+  summary:
+    kind: str
+  entities:
+    kind: list
+  sources:
+    kind: list
+  asserts:
+    kind: list
+  tags:
+    kind: list

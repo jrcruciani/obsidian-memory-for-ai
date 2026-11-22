@@ -1,0 +1,532 @@
+"""Declarative schema checker and cross-record semantic linter for Knowledge Factory v5.0."""
+
+from __future__ import annotations
+
+import datetime as dt
+import re
+from collections import defaultdict
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+from .model import (
+    AGENT_ID_RE,
+    DECISION_ID_RE,
+    SLUG_RE,
+    TRUST_LEVELS,
+    WIKILINK_RE,
+    canonical_source_digest,
+    fact_interval,
+    fold_text,
+    is_current_record,
+    is_fact_visible,
+    load_entities,
+    load_manifest,
+    load_policy,
+    load_predicates,
+    load_yaml_file,
+    parse_date,
+    parse_datetime,
+    rel_path,
+    safe_path,
+    scan_records,
+    split_frontmatter,
+    today,
+    validate_confidence,
+)
+from .templates import SCHEMAS
+
+
+@dataclass(frozen=True)
+class Finding:
+    severity: str  # "ERROR" | "WARN"
+    path: str
+    message: str
+
+    def to_dict(self) -> dict[str, str]:
+        return {"severity": self.severity, "path": self.path, "message": self.message}
+
+
+def _check_field_type(kind: str, value: Any) -> None:
+    if kind == "any":
+        return
+    if kind == "str":
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError(f"expected non-empty string, got {value!r}")
+    elif kind == "bool":
+        if not isinstance(value, bool):
+            raise ValueError(f"expected boolean, got {value!r}")
+    elif kind == "int":
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise ValueError(f"expected integer, got {value!r}")
+    elif kind == "list":
+        if not isinstance(value, list):
+            raise ValueError(f"expected list, got {value!r}")
+    elif kind == "date":
+        parse_date(value)
+    elif kind == "datetime":
+        parse_datetime(value)
+    elif kind == "confidence":
+        validate_confidence(value)
+
+
+def _load_type_schemas(root: Path) -> tuple[dict[str, dict[str, Any]], list[Finding]]:
+    findings: list[Finding] = []
+    loaded: dict[str, dict[str, Any]] = {}
+    schema_dir = root / "factory/schema"
+    for filename in sorted(SCHEMAS.keys()):
+        p = schema_dir / filename
+        if not p.is_file():
+            findings.append(Finding("ERROR", f"factory/schema/{filename}", f"missing required schema file {filename}"))
+            continue
+        try:
+            data = load_yaml_file(p)
+            t = data.get("type")
+            if not isinstance(t, str):
+                findings.append(Finding("ERROR", rel_path(p, root), "schema file missing 'type' string"))
+                continue
+            loaded[t] = data
+        except Exception as exc:
+            findings.append(Finding("ERROR", rel_path(p, root), f"invalid schema YAML: {exc}"))
+    return loaded, findings
+
+
+def _validate_against_schema(rel: str, fm: dict[str, Any], schema: dict[str, Any]) -> list[Finding]:
+    findings: list[Finding] = []
+    required = schema.get("required", [])
+    fields = schema.get("fields", {})
+    for req in required:
+        if req not in fm or fm[req] is None:
+            findings.append(Finding("ERROR", rel, f"missing required field '{req}'"))
+    for key, val in fm.items():
+        if key not in fields:
+            findings.append(Finding("ERROR", rel, f"unknown frontmatter field '{key}' for type '{schema.get('type')}'"))
+            continue
+        spec = fields[key]
+        if val is None:
+            if not spec.get("nullable", False) and key in required:
+                findings.append(Finding("ERROR", rel, f"field '{key}' cannot be null"))
+            continue
+        try:
+            _check_field_type(spec.get("kind", "any"), val)
+            if "enum" in spec and val not in spec["enum"]:
+                findings.append(Finding("ERROR", rel, f"invalid {key} {val!r}; allowed: {spec['enum']}"))
+        except ValueError as exc:
+            findings.append(Finding("ERROR", rel, f"field '{key}': {exc}"))
+    return findings
+
+
+def _link_resolves(target: str, known_paths: set[str], by_stem: dict[str, list[str]]) -> tuple[bool, bool]:
+    cleaned = target.strip().strip("/")
+    if not cleaned:
+        return True, False
+    if cleaned in known_paths or f"{cleaned}.md" in known_paths:
+        return True, False
+    if "/" not in cleaned:
+        matches = by_stem.get(cleaned, [])
+        if len(matches) == 1:
+            return True, False
+        if len(matches) > 1:
+            return True, True
+    return False, False
+
+
+def lint_vault(
+    root: Path,
+    *,
+    strict: bool = False,
+    check_stale: bool = False,
+    check_generated: bool = False,
+) -> list[Finding]:
+    findings: list[Finding] = []
+
+    manifest_path = root / "factory/schema/manifest.yaml"
+    if not manifest_path.is_file():
+        return [Finding("ERROR", "factory/schema/manifest.yaml", "missing factory/schema/manifest.yaml")]
+    try:
+        manifest = load_manifest(root)
+    except Exception as exc:
+        return [Finding("ERROR", "factory/schema/manifest.yaml", f"cannot parse manifest.yaml: {exc}")]
+
+    if str(manifest.get("spec_version")) != "5.0":
+        findings.append(
+            Finding("ERROR", "factory/schema/manifest.yaml", f"spec_version must be '5.0', got {manifest.get('spec_version')!r}")
+        )
+    if manifest.get("protocol") != "knowledge-factory":
+        findings.append(
+            Finding("ERROR", "factory/schema/manifest.yaml", f"protocol must be 'knowledge-factory', got {manifest.get('protocol')!r}")
+        )
+
+    type_schemas, schema_findings = _load_type_schemas(root)
+    findings.extend(schema_findings)
+
+    # Validate entities & alias uniqueness
+    entities: dict[str, dict[str, Any]] = {}
+    ent_path = root / "knowledge/entities.md"
+    if not ent_path.is_file():
+        findings.append(Finding("ERROR", "knowledge/entities.md", "missing canonical entity registry knowledge/entities.md"))
+    else:
+        try:
+            ent_fm, _ = split_frontmatter(ent_path)
+            if "entity-registry" in type_schemas:
+                findings.extend(_validate_against_schema("knowledge/entities.md", ent_fm, type_schemas["entity-registry"]))
+            owners: dict[str, str] = {}
+            for item in ent_fm.get("entities", []) if isinstance(ent_fm.get("entities"), list) else []:
+                if not isinstance(item, dict) or not isinstance(item.get("id"), str) or not SLUG_RE.fullmatch(item["id"]):
+                    findings.append(Finding("ERROR", "knowledge/entities.md", f"invalid entity declaration: {item!r}"))
+                    continue
+                eid = item["id"]
+                if eid in entities:
+                    findings.append(Finding("ERROR", "knowledge/entities.md", f"duplicate entity id '{eid}'"))
+                entities[eid] = item
+                aliases = item.get("aliases", [])
+                if not isinstance(aliases, list):
+                    findings.append(Finding("ERROR", "knowledge/entities.md", f"aliases for '{eid}' must be a list"))
+                    continue
+                for token in [eid, *aliases]:
+                    if not isinstance(token, str) or not token.strip():
+                        findings.append(Finding("ERROR", "knowledge/entities.md", f"empty alias on entity '{eid}'"))
+                        continue
+                    folded = fold_text(token)
+                    if folded in owners and owners[folded] != eid:
+                        findings.append(
+                            Finding(
+                                "ERROR",
+                                "knowledge/entities.md",
+                                f"alias collision: {token!r} folds to {folded!r} for both '{owners[folded]}' and '{eid}'",
+                            )
+                        )
+                    owners[folded] = eid
+        except Exception as exc:
+            findings.append(Finding("ERROR", "knowledge/entities.md", str(exc)))
+
+    predicates = load_predicates(root)
+    if not predicates:
+        findings.append(Finding("ERROR", "factory/schema/predicates.yaml", "predicates.yaml must declare at least one predicate"))
+
+    policy = load_policy(root)
+    roles_cfg = policy.get("roles", {})
+    namespaces_cfg = {ns["id"]: ns for ns in policy.get("namespaces", []) if isinstance(ns, dict) and "id" in ns}
+    agents_cfg = {ag["id"]: ag for ag in policy.get("agents", []) if isinstance(ag, dict) and "id" in ag}
+
+    # Collect all canonical + factory Markdown files
+    md_records: list[tuple[Path, str, dict[str, Any], str]] = []
+    for plane in ("knowledge", "factory/signals", "factory/proposals", "factory/reviews", "factory/receipts"):
+        base = root / plane
+        if not base.exists():
+            continue
+        for p in sorted(base.rglob("*.md")):
+            r = rel_path(p, root)
+            try:
+                fm, body = split_frontmatter(p)
+            except Exception as exc:
+                findings.append(Finding("ERROR", r, str(exc)))
+                continue
+            if not fm:
+                findings.append(Finding("ERROR", r, "missing YAML frontmatter"))
+                continue
+            md_records.append((p, r, fm, body))
+
+    # Global unique ID check & schema validation
+    seen_ids: dict[str, str] = {}
+    known_link_targets: set[str] = set()
+    by_stem: dict[str, list[str]] = defaultdict(list)
+
+    for p in sorted((root / "sources").rglob("*.md")) if (root / "sources").exists() else []:
+        r = rel_path(p, root)
+        known_link_targets.update((r, r.removesuffix(".md")))
+        by_stem[p.stem].append(r)
+
+    facts_by_slot: dict[tuple[str, str], list[tuple[Path, str, dict[str, Any]]]] = defaultdict(list)
+    skills_by_slug: dict[str, list[tuple[Path, str, dict[str, Any]]]] = defaultdict(list)
+    guidance_by_slug: dict[str, list[tuple[Path, str, dict[str, Any]]]] = defaultdict(list)
+    decisions_by_id: dict[str, list[tuple[Path, str, dict[str, Any]]]] = defaultdict(list)
+    proposals_by_id: dict[str, tuple[str, dict[str, Any]]] = {}
+    reviews_list: list[tuple[str, dict[str, Any]]] = []
+
+    for p, r, fm, body in md_records:
+        known_link_targets.update((r, r.removesuffix(".md")))
+        by_stem[p.stem].append(r)
+
+        rtype = fm.get("type")
+        if not isinstance(rtype, str) or rtype not in type_schemas:
+            findings.append(Finding("ERROR", r, f"unknown or missing record type {rtype!r}"))
+            continue
+        findings.extend(_validate_against_schema(r, fm, type_schemas[rtype]))
+
+        rec_id = fm.get("id")
+        if isinstance(rec_id, str):
+            # Superseded decisions keep decision family slug only if distinct history id; enforce globally unique IDs!
+            if rec_id in seen_ids:
+                findings.append(Finding("ERROR", r, f"duplicate id '{rec_id}' (already used in {seen_ids[rec_id]})"))
+            else:
+                seen_ids[rec_id] = r
+
+        # Type-specific semantic invariants
+        if rtype == "fact":
+            ent = fm.get("entity")
+            pred = fm.get("predicate")
+            if isinstance(ent, str) and ent not in entities:
+                findings.append(Finding("ERROR", r, f"unknown entity '{ent}' (declare in knowledge/entities.md)"))
+            if isinstance(pred, str) and pred not in predicates:
+                findings.append(Finding("ERROR", r, f"unknown predicate '{pred}' (declare in factory/schema/predicates.yaml)"))
+            if isinstance(ent, str) and isinstance(pred, str):
+                facts_by_slot[(ent, pred)].append((p, r, fm))
+                expected_head = f"knowledge/facts/{ent}/{pred}.md"
+                is_hist = p.parent == (root / f"knowledge/facts/{ent}/{pred}")
+                if is_current_record(fm):
+                    if r != expected_head:
+                        findings.append(Finding("ERROR", r, f"active fact must reside at {expected_head}"))
+                elif fm.get("status") == "superseded":
+                    if not is_hist or not re.fullmatch(r"\d{4}-\d{2}-\d{2}(?:-[2-9]\d*|-1\d+)?", p.stem):
+                        findings.append(
+                            Finding("ERROR", r, f"superseded fact must reside at knowledge/facts/{ent}/{pred}/YYYY-MM-DD[-N].md")
+                        )
+            try:
+                start, end = fact_interval(fm)
+                if start >= end:
+                    findings.append(Finding("ERROR", r, f"valid_from ({fm.get('valid_from')}) must be strictly before valid_until ({fm.get('valid_until')})"))
+            except ValueError:
+                pass
+            if fm.get("status") == "retracted" and (not fm.get("retracted_at") or not fm.get("retraction_reason")):
+                findings.append(Finding("ERROR", r, "retracted fact requires retracted_at and retraction_reason"))
+            if fm.get("assertion") == "inferred" and not fm.get("derived_from"):
+                findings.append(Finding("WARN", r, "inferred fact should cite derived_from evidence"))
+            if fm.get("trust") == "external" and fm.get("confidence") is None:
+                findings.append(Finding("WARN", r, "external fact should specify numeric confidence"))
+            _check_evidence_paths(root, r, fm.get("derived_from", []), findings, ("knowledge/events/", "knowledge/decisions/", "factory/signals/", "sources/"))
+            _check_supersedes_chain(root, p, r, fm, "knowledge/facts/", findings, match_keys=("entity", "predicate"))
+
+        elif rtype == "event":
+            for ent in fm.get("entities", []) or []:
+                if ent not in entities:
+                    findings.append(Finding("ERROR", r, f"event references unknown entity '{ent}'"))
+            _check_evidence_paths(root, r, fm.get("sources", []), findings, ("sources/",))
+            for claim in fm.get("asserts", []) or []:
+                if not isinstance(claim, dict) or not {"entity", "predicate", "value"} <= claim.keys():
+                    findings.append(Finding("ERROR", r, "event asserts items must contain entity, predicate, value"))
+                else:
+                    if claim["entity"] not in entities:
+                        findings.append(Finding("ERROR", r, f"event asserts unknown entity '{claim['entity']}'"))
+                    if claim["predicate"] not in predicates:
+                        findings.append(Finding("ERROR", r, f"event asserts unknown predicate '{claim['predicate']}'"))
+
+        elif rtype == "skill":
+            slug = fm.get("slug")
+            if isinstance(slug, str):
+                skills_by_slug[slug].append((p, r, fm))
+                expected_head = f"knowledge/skills/{slug}.md"
+                if is_current_record(fm) and r != expected_head:
+                    findings.append(Finding("ERROR", r, f"active skill must reside at {expected_head}"))
+            if not fm.get("triggers"):
+                findings.append(Finding("ERROR", r, "skill must define at least one trigger"))
+            if not fm.get("verification"):
+                findings.append(Finding("ERROR", r, "skill must define at least one verification step"))
+            for ent in fm.get("entities", []) or []:
+                if ent not in entities:
+                    findings.append(Finding("ERROR", r, f"skill references unknown entity '{ent}'"))
+            _check_evidence_paths(root, r, fm.get("derived_from", []), findings, ("knowledge/events/", "knowledge/decisions/", "factory/signals/", "sources/"))
+            _check_supersedes_chain(root, p, r, fm, "knowledge/skills/", findings, match_keys=("slug",))
+
+        elif rtype == "guidance":
+            slug = fm.get("slug")
+            if isinstance(slug, str):
+                guidance_by_slug[slug].append((p, r, fm))
+                expected_head = f"knowledge/guidance/{slug}.md"
+                if is_current_record(fm) and r != expected_head:
+                    findings.append(Finding("ERROR", r, f"active guidance must reside at {expected_head}"))
+            for ent in fm.get("entities", []) or []:
+                if ent not in entities:
+                    findings.append(Finding("ERROR", r, f"guidance references unknown entity '{ent}'"))
+            _check_evidence_paths(root, r, fm.get("derived_from", []), findings, ("knowledge/events/", "knowledge/decisions/", "factory/signals/", "sources/"))
+            _check_supersedes_chain(root, p, r, fm, "knowledge/guidance/", findings, match_keys=("slug",))
+
+        elif rtype == "decision":
+            did = fm.get("id")
+            if isinstance(did, str) and not DECISION_ID_RE.fullmatch(did):
+                findings.append(Finding("ERROR", r, f"decision id '{did}' must match DEC-NNN..."))
+            family = p.stem if is_current_record(fm) else p.parent.name
+            decisions_by_id[family].append((p, r, fm))
+            for ent in fm.get("entities", []) or []:
+                if ent not in entities:
+                    findings.append(Finding("ERROR", r, f"decision references unknown entity '{ent}'"))
+            _check_evidence_paths(root, r, fm.get("derived_from", []), findings, ("knowledge/events/", "factory/proposals/", "factory/signals/", "sources/"))
+
+        elif rtype == "signal":
+            for ent in fm.get("entities", []) or []:
+                if ent not in entities:
+                    findings.append(Finding("ERROR", r, f"signal references unknown entity '{ent}'"))
+            _check_evidence_paths(root, r, fm.get("evidence", []), findings, ("knowledge/events/", "sources/"))
+
+        elif rtype == "proposal":
+            from .governance import compute_proposal_hash
+
+            pid = fm.get("id", "")
+            proposals_by_id[pid] = (r, fm)
+            ops = fm.get("ops")
+            if not isinstance(ops, list) or len(ops) == 0:
+                findings.append(Finding("ERROR", r, "proposal must contain at least one executable operation (diagnostic flags belong in factory/signals/)"))
+            expected_hash = compute_proposal_hash(fm)
+            if fm.get("content_hash") != expected_hash:
+                findings.append(Finding("ERROR", r, f"proposal content_hash mismatch: expected {expected_hash}, got {fm.get('content_hash')}"))
+
+        elif rtype == "review":
+            reviews_list.append((r, fm))
+
+        elif rtype == "note":
+            if fm.get("authoritative") is True:
+                findings.append(Finding("ERROR", r, "notes under knowledge/notes/ are non-authoritative prose; set authoritative: false or promote to fact/skill/guidance/decision"))
+
+    # Cross-record group checks for facts
+    for (ent, pred), group in facts_by_slot.items():
+        actives = [(p, r, d) for p, r, d in group if is_current_record(d)]
+        if len(actives) > 1:
+            findings.append(Finding("ERROR", actives[0][1], f"multiple active facts for {ent}/{pred}"))
+        elif len(actives) == 0 and any(d.get("status") == "superseded" for _, _, d in group):
+            findings.append(Finding("ERROR", group[0][1], f"superseded history chain for {ent}/{pred} has no active head"))
+        for idx, (_, r1, d1) in enumerate(group):
+            if d1.get("status") == "retracted":
+                continue
+            for _, r2, d2 in group[idx + 1:]:
+                if d2.get("status") == "retracted":
+                    continue
+                try:
+                    a, b = fact_interval(d1), fact_interval(d2)
+                    if max(a[0], b[0]) < min(a[1], b[1]) and d1.get("value") != d2.get("value"):
+                        findings.append(Finding("ERROR", r1, f"contradicts overlapping fact {r2}"))
+                except ValueError:
+                    pass
+
+    # Cross-record review governance checks
+    for r, rev in reviews_list:
+        prop_id = rev.get("proposal_id", "")
+        if prop_id not in proposals_by_id:
+            findings.append(Finding("ERROR", r, f"review references nonexistent proposal '{prop_id}'"))
+            continue
+        _, prop = proposals_by_id[prop_id]
+        reviewer = rev.get("reviewer_id")
+        if reviewer == prop.get("proposer_id"):
+            findings.append(Finding("ERROR", r, f"self-approval not allowed: reviewer '{reviewer}' is the proposer"))
+        ns = prop.get("namespace", "")
+        ns_cfg = namespaces_cfg.get(ns, {})
+        ag = agents_cfg.get(str(reviewer), {})
+        ag_roles = set(ag.get("roles", []))
+        allowed_role_names = set(ns_cfg.get("allowed_reviewers", []))
+        if allowed_role_names and not (ag_roles & allowed_role_names) and "owner" not in ag_roles:
+            findings.append(Finding("ERROR", r, f"reviewer '{reviewer}' lacks allowed reviewer role for namespace '{ns}'"))
+        if rev.get("proposal_content_hash") != prop.get("content_hash"):
+            findings.append(Finding("WARN", r, f"review hash does not match current content_hash of proposal '{prop_id}' (stale review)"))
+        if rev.get("verdict") in {"rejected", "changes_requested"} and not rev.get("comment"):
+            findings.append(Finding("ERROR", r, f"verdict '{rev.get('verdict')}' requires a non-empty comment"))
+
+    # Wikilink resolution across canonical knowledge/
+    for p, r, fm, body in md_records:
+        if not r.startswith("knowledge/"):
+            continue
+        for raw_link in WIKILINK_RE.findall(body):
+            ok, ambiguous = _link_resolves(raw_link, known_link_targets, by_stem)
+            if not ok:
+                findings.append(Finding("ERROR", r, f"unresolved wikilink: {raw_link}"))
+            elif ambiguous:
+                findings.append(Finding("ERROR", r, f"ambiguous wikilink: {raw_link}"))
+
+    # Optional / strict staleness check
+    if check_stale:
+        for stale_rel, reason in compute_stale_records(root):
+            findings.append(Finding("WARN", stale_rel, f"stale record: {reason}"))
+
+    # Generated artifact non-edit & freshness check
+    require_gen = check_generated or strict or bool(manifest.get("settings", {}).get("require_generated_clean", False))
+    if require_gen:
+        from .rebuild import verify_generated_integrity
+
+        for gen_rel, msg in verify_generated_integrity(root):
+            findings.append(Finding("ERROR" if (strict or check_generated) else "WARN", gen_rel, msg))
+
+    return findings
+
+
+def _check_evidence_paths(
+    root: Path,
+    rel: str,
+    paths: Any,
+    findings: list[Finding],
+    prefixes: tuple[str, ...],
+) -> None:
+    if not isinstance(paths, list):
+        return
+    for ref in paths:
+        try:
+            target = safe_path(root, ref, prefixes)
+            if not target.is_file():
+                findings.append(Finding("ERROR", rel, f"referenced evidence file does not exist: {ref}"))
+        except ValueError as exc:
+            findings.append(Finding("ERROR", rel, str(exc)))
+
+
+def _check_supersedes_chain(
+    root: Path,
+    path: Path,
+    rel: str,
+    fm: dict[str, Any],
+    prefix: str,
+    findings: list[Finding],
+    *,
+    match_keys: tuple[str, ...],
+) -> None:
+    sup = fm.get("supersedes")
+    if not sup:
+        return
+    try:
+        target = safe_path(root, sup, (prefix,))
+    except ValueError as exc:
+        findings.append(Finding("ERROR", rel, str(exc)))
+        return
+    if not target.is_file():
+        findings.append(Finding("ERROR", rel, f"supersedes target does not exist: {sup}"))
+        return
+    prior_fm, _ = split_frontmatter(target)
+    for k in match_keys:
+        if prior_fm.get(k) != fm.get(k):
+            findings.append(Finding("ERROR", rel, f"supersedes mismatch on '{k}': {prior_fm.get(k)!r} != {fm.get(k)!r}"))
+    if fm.get("type") == "fact":
+        old_end = parse_date(prior_fm.get("valid_until"))
+        new_start = parse_date(fm.get("valid_from"))
+        if old_end is None or new_start is None:
+            findings.append(Finding("ERROR", rel, "fact supersession requires prior valid_until and new valid_from"))
+        elif old_end != new_start:
+            findings.append(Finding("ERROR", rel, f"half-open boundary mismatch: prior valid_until ({old_end}) != new valid_from ({new_start})"))
+    seen = {path.resolve()}
+    cursor = target
+    while cursor.is_file():
+        if cursor.resolve() in seen:
+            findings.append(Finding("ERROR", rel, "supersedes chain contains a cycle"))
+            break
+        seen.add(cursor.resolve())
+        anc, _ = split_frontmatter(cursor)
+        nxt = anc.get("supersedes")
+        if not nxt:
+            break
+        cursor = safe_path(root, nxt, (prefix,))
+
+
+def compute_stale_records(root: Path) -> list[tuple[str, str]]:
+    manifest = load_manifest(root)
+    threshold = int(manifest.get("settings", {}).get("stale_after_days", 180))
+    ref = today()
+    cutoff = ref - dt.timedelta(days=threshold)
+    stale: list[tuple[str, str]] = []
+    for folder, rtype in (("knowledge/facts", "fact"), ("knowledge/skills", "skill"), ("knowledge/guidance", "guidance")):
+        for path, fm, _ in scan_records(root, folder, rtype):
+            if not is_current_record(fm):
+                continue
+            reasons: list[str] = []
+            rev_after = parse_date(fm.get("review_after"))
+            if rev_after and rev_after < ref:
+                reasons.append(f"review_after {rev_after} < {ref}")
+            last_conf = parse_date(fm.get("last_confirmed"))
+            if last_conf and last_conf < cutoff:
+                reasons.append(f"last_confirmed {last_conf} older than {threshold}d cutoff ({cutoff})")
+            if reasons:
+                stale.append((rel_path(path, root), "; ".join(reasons)))
+    return stale

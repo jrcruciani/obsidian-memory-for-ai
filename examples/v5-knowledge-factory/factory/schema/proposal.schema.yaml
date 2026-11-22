@@ -1,0 +1,67 @@
+type: proposal
+required:
+  - type
+  - id
+  - title
+  - namespace
+  - proposer_id
+  - status
+  - created_at
+  - ops
+  - required_approvals
+  - content_hash
+fields:
+  type:
+    kind: str
+    enum:
+      - proposal
+  id:
+    kind: str
+  title:
+    kind: str
+  namespace:
+    kind: str
+    enum:
+      - entities
+      - facts
+      - events
+      - skills
+      - guidance
+      - decisions
+      - mixed
+  proposer_id:
+    kind: str
+  status:
+    kind: str
+    enum:
+      - draft
+      - proposed
+      - changes_requested
+      - approved
+      - rejected
+      - conflict
+      - published
+  created_at:
+    kind: datetime
+  rationale:
+    kind: str
+    nullable: true
+  resolves_signals:
+    kind: list
+  derived_from:
+    kind: list
+  ops:
+    kind: list
+  required_approvals:
+    kind: int
+  content_hash:
+    kind: str
+  idempotency_key:
+    kind: str
+    nullable: true
+  published_at:
+    kind: datetime
+    nullable: true
+  receipt_id:
+    kind: str
+    nullable: true

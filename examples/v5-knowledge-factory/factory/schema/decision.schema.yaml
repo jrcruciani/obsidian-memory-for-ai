@@ -1,0 +1,45 @@
+type: decision
+required:
+  - type
+  - id
+  - title
+  - status
+  - decided_at
+  - decided_by
+  - domain
+  - summary
+fields:
+  type:
+    kind: str
+    enum:
+      - decision
+  id:
+    kind: str
+  title:
+    kind: str
+  status:
+    kind: str
+    enum:
+      - accepted
+      - superseded
+      - deprecated
+      - retracted
+  decided_at:
+    kind: date
+  decided_by:
+    kind: str
+  domain:
+    kind: str
+  summary:
+    kind: str
+  entities:
+    kind: list
+  derived_from:
+    kind: list
+  consequences:
+    kind: list
+  supersedes:
+    kind: str
+    nullable: true
+  pinned:
+    kind: bool
