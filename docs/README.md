@@ -1,50 +1,27 @@
-# Documentation map
+# Documentation Map — Knowledge Factory v5.0
 
-This repository is documentation-first. The current protocol is **v4.1 Temporal,
-Traceable Atomic Markdown Memory**; v4.0 and v3.1 remain supported.
+This repository defines **Obsidian Memory for AI v5.0: The Knowledge Factory Reboot**. Plain Markdown, YAML frontmatter, and Git remain the sole canonical state.
 
-## Canonical reading paths
+## Canonical Reading Paths
 
-| Audience | Start with | Then read |
+| Audience | Start With | Next |
 |---|---|---|
-| New user copying a vault | [`../README.md`](../README.md) | [`../examples/v4.1-minimal-vault/`](../examples/v4.1-minimal-vault/), then [`../SPEC-v4.1.md`](../SPEC-v4.1.md) |
-| Implementer building v4.1 tools | [`../SPEC-v4.1.md`](../SPEC-v4.1.md) | [`../examples/v4.1-minimal-vault/tools/`](../examples/v4.1-minimal-vault/tools/), [`../tests/eval/`](../tests/eval/) |
-| v4.0 user upgrading | [`../migration-v4.1.md`](../migration-v4.1.md) | [`../examples/v4.1-minimal-vault/AGENTS.md`](../examples/v4.1-minimal-vault/AGENTS.md) |
-| v3 user migrating to v4 | [`../migration-v4.md`](../migration-v4.md) | [`../examples/v4-minimal-vault/`](../examples/v4-minimal-vault/) |
-| v3 user staying on v3 | [`../SPEC-v3.md`](../SPEC-v3.md) | [`../examples/v3-minimal-vault/`](../examples/v3-minimal-vault/) |
-| Existing v2 user | [`../migration-v3.md`](../migration-v3.md) | [`../examples/v3-minimal-vault/`](../examples/v3-minimal-vault/) |
-| Agent/plugin author | [`../plugin-guide.md`](../plugin-guide.md) | [`../automation-guide.md`](../automation-guide.md) |
-| Historian of the original pattern | [`../guide.md`](../guide.md) | [`../examples/minimal-vault/`](../examples/minimal-vault/) |
+| New user starting a v5.0 vault | [`../README.md`](../README.md) | [`../examples/v5-knowledge-factory/`](../examples/v5-knowledge-factory/), then [`executor-and-curator.md`](executor-and-curator.md) |
+| Protocol implementer / auditor | [`../SPEC-v5.0.md`](../SPEC-v5.0.md) | [`architecture.md`](architecture.md), [`../tools/`](../tools/), [`../tests/eval/`](../tests/eval/) |
+| v4.0 / v4.1 vault owner upgrading | [`migration-from-v4.1.md`](migration-from-v4.1.md) | [`archive/SPEC-v4.1.md`](archive/SPEC-v4.1.md) |
+| Host-agent / skill integrator | [`integrations.md`](integrations.md) | [`anti-patterns.md`](anti-patterns.md) |
+| Product & governance reviewer | [`open-decisions.md`](open-decisions.md) | [`architecture.md`](architecture.md) |
 
-## Document status
+## Document Inventory
 
-| Document | Status | Role |
+| Path | Status | Purpose |
 |---|---|---|
-| [`../README.md`](../README.md) | Current | Landing page and short orientation |
-| [`../SPEC-v4.1.md`](../SPEC-v4.1.md) | **Current, normative** | Stable v4.1 compatibility contract |
-| [`../SPEC-v4.md`](../SPEC-v4.md) | Previous stable, normative | Stable v4.0 compatibility contract |
-| [`../SPEC-v3.md`](../SPEC-v3.md) | Previous stable, normative | Stable v3.1 compatibility contract |
-| [`../examples/v4.1-minimal-vault/README.md`](../examples/v4.1-minimal-vault/README.md) | **Current** | Working v4.1 reference implementation |
-| [`../examples/v4-minimal-vault/README.md`](../examples/v4-minimal-vault/README.md) | Previous stable | Preserved v4.0 reference implementation |
-| [`../examples/v3-minimal-vault/README.md`](../examples/v3-minimal-vault/README.md) | Previous stable | Working v3.1 reference implementation |
-| [`../migration-v4.md`](../migration-v4.md) | Current | Manual v3-to-v4 migration guide |
-| [`../migration-v4.1.md`](../migration-v4.1.md) | Current | Additive v4.0-to-v4.1 migration |
-| [`../examples/v4.1-minimal-vault/AGENTS.md`](../examples/v4.1-minimal-vault/AGENTS.md) | Current | Bootstrap-first agent workflow and extraction template |
-| [`../tests/eval/README.md`](../tests/eval/README.md) | Current | Offline exact-query evaluation gate |
-| [`../migration-v3.md`](../migration-v3.md) | Current | Manual v2-to-v3 migration checklist |
-| [`../automation-guide.md`](../automation-guide.md) | Current, optional | Automation patterns |
-| [`../plugin-guide.md`](../plugin-guide.md) | Current, optional | Host-agent command/skill packaging pattern |
-| [`../obsidian-cli.md`](../obsidian-cli.md) | Optional integration | Local Obsidian CLI recipes |
-| [`../photo-ingest-guide.md`](../photo-ingest-guide.md) | Optional integration | Domain-specific ingest workflow |
-| [`../optional-ideas.md`](../optional-ideas.md) | Experimental | Non-protocol ideas |
-| [`../guide.md`](../guide.md) | Legacy v2 | Original compiled-wiki guide |
-| [`../examples/minimal-vault/README.md`](../examples/minimal-vault/README.md) | Legacy v2 | Original compiled-wiki example |
-
-## Maintenance rules
-
-1. Keep `README.md` short and navigational; move deep explanations to focused docs.
-2. Treat `SPEC-v4.1.md` as the current contract. Preserve `SPEC-v4.md` and `SPEC-v3.md` for their versioned behavior.
-3. Mark v2 as legacy and v3/v4.0 as previous stable; do not rewrite their reference data.
-4. Avoid adding new top-level guides unless they are broadly useful.
-5. When a guide describes optional tooling, state whether it is required for v4.1 compatibility. Most integrations are optional.
-6. Do not bulk-refresh date examples unless the semantic guidance changes.
+| [`../SPEC-v5.0.md`](../SPEC-v5.0.md) | **Normative (v5.0)** | Complete v5.0 protocol contract, schemas, CLI, invariants, and gates |
+| [`architecture.md`](architecture.md) | Current | Manifesto, four-plane layout, challenged v4.1 decisions, retired legacy concepts |
+| [`executor-and-curator.md`](executor-and-curator.md) | Current | Operating model for Executors, Curators, and Reviewers/Owners |
+| [`migration-from-v4.1.md`](migration-from-v4.1.md) | Current | Breaking changes, crosswalk tables, and automated `kf.py migrate` guide |
+| [`anti-patterns.md`](anti-patterns.md) | Current | Common failure modes in Markdown-backed AI knowledge systems |
+| [`integrations.md`](integrations.md) | Current | Host-agent setup (Claude Code, Codex, Hermes, Cursor, Obsidian CLI, cron) |
+| [`open-decisions.md`](open-decisions.md) | Current | Explicit open protocol/product trade-offs |
+| [`archive/SPEC-v4.1.md`](archive/SPEC-v4.1.md) | Historical | Frozen v4.1 specification for migration reference |
+| [`optional/`](optional/) | Optional | Non-protocol Obsidian CLI recipes, photo ingest, and sidecar experiments |
