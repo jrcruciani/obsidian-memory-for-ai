@@ -282,25 +282,44 @@ def lint_vault(
         if rtype == "fact":
             ent = fm.get("entity")
             pred = fm.get("predicate")
-            if isinstance(ent, str) and ent not in entities:
+            valid_ent = isinstance(ent, str) and bool(SLUG_RE.fullmatch(ent))
+            valid_pred = isinstance(pred, str) and bool(SLUG_RE.fullmatch(pred))
+            if not valid_ent:
+                findings.append(Finding("ERROR", r, f"fact entity {ent!r} must match {SLUG_RE.pattern}"))
+            elif ent not in entities:
                 findings.append(Finding("ERROR", r, f"unknown entity '{ent}' (declare in knowledge/entities.md)"))
-            if isinstance(pred, str) and pred not in predicates:
+            if not valid_pred:
+                findings.append(Finding("ERROR", r, f"fact predicate {pred!r} must match {SLUG_RE.pattern}"))
+            elif pred not in predicates:
                 findings.append(Finding("ERROR", r, f"unknown predicate '{pred}' (declare in factory/schema/predicates.yaml)"))
-            if isinstance(ent, str) and isinstance(pred, str):
+            if valid_ent and valid_pred:
+                assert isinstance(ent, str) and isinstance(pred, str)
                 facts_by_slot[(ent, pred)].append((p, r, fm))
                 expected_head = f"knowledge/facts/{ent}/{pred}.md"
-                is_hist = p.parent == (root / f"knowledge/facts/{ent}/{pred}")
+                is_hist = p.parent == (root / f"knowledge/facts/{ent}/{pred}") and bool(HIST_STEM_RE.fullmatch(p.stem))
                 if is_active_head(fm):
                     if r != expected_head:
                         findings.append(Finding("ERROR", r, f"active fact must reside at {expected_head}"))
                 elif fm.get("status") == "superseded":
-                    if not is_hist or not re.fullmatch(r"\d{4}-\d{2}-\d{2}(?:-[2-9]\d*|-1\d+)?", p.stem):
+                    if not is_hist:
                         findings.append(
                             Finding("ERROR", r, f"superseded fact must reside at knowledge/facts/{ent}/{pred}/YYYY-MM-DD[-N].md")
                         )
+                else:
+                    if r != expected_head:
+                        findings.append(
+                            Finding("ERROR", r, f"{fm.get('status') or 'non-active'} fact must reside at {expected_head}")
+                        )
+            elif not r.startswith("knowledge/facts/"):
+                findings.append(Finding("ERROR", r, "fact must reside under knowledge/facts/<entity>/<predicate>.md"))
             try:
                 start, end = fact_interval(fm)
-                if start >= end:
+                if fm.get("status") == "superseded":
+                    if start > end:
+                        findings.append(
+                            Finding("ERROR", r, f"valid_from ({fm.get('valid_from')}) must not be after valid_until ({fm.get('valid_until')})")
+                        )
+                elif start >= end:
                     findings.append(Finding("ERROR", r, f"valid_from ({fm.get('valid_from')}) must be strictly before valid_until ({fm.get('valid_until')})"))
             except ValueError:
                 pass
@@ -341,8 +360,8 @@ def lint_vault(
                 elif fm.get("status") == "superseded":
                     if not is_hist:
                         findings.append(Finding("ERROR", r, f"superseded skill must reside at knowledge/skills/{slug}/YYYY-MM-DD[-N].md"))
-                elif r != expected_head and not is_hist:
-                    findings.append(Finding("ERROR", r, f"skill '{slug}' must reside at {expected_head} or {expected_head[:-3]}/YYYY-MM-DD[-N].md"))
+                elif r != expected_head:
+                    findings.append(Finding("ERROR", r, f"{fm.get('status') or 'non-active'} skill '{slug}' must reside at {expected_head}"))
             ver = fm.get("version")
             if isinstance(ver, int) and not isinstance(ver, bool) and ver < 1:
                 findings.append(Finding("ERROR", r, f"skill version must be >= 1, got {ver}"))
@@ -376,8 +395,8 @@ def lint_vault(
                 elif fm.get("status") == "superseded":
                     if not is_hist:
                         findings.append(Finding("ERROR", r, f"superseded guidance must reside at knowledge/guidance/{slug}/YYYY-MM-DD[-N].md"))
-                elif r != expected_head and not is_hist:
-                    findings.append(Finding("ERROR", r, f"guidance '{slug}' must reside at {expected_head} or {expected_head[:-3]}/YYYY-MM-DD[-N].md"))
+                elif r != expected_head:
+                    findings.append(Finding("ERROR", r, f"{fm.get('status') or 'non-active'} guidance '{slug}' must reside at {expected_head}"))
             if fm.get("status") == "retracted" and (not fm.get("retracted_at") or not fm.get("retraction_reason")):
                 findings.append(Finding("ERROR", r, "retracted guidance requires retracted_at and retraction_reason"))
             for ent in fm.get("entities", []) or []:
@@ -417,7 +436,9 @@ def lint_vault(
             for ent in fm.get("entities", []) or []:
                 if ent not in entities:
                     findings.append(Finding("ERROR", r, f"decision references unknown entity '{ent}'"))
-            _check_evidence_paths(root, r, fm.get("derived_from", []), findings, ("knowledge/events/", "factory/proposals/", "factory/signals/", "sources/"))
+            _check_evidence_paths(root, r, fm.get("derived_from", []), findings, ("knowledge/events/", "knowledge/decisions/", "factory/proposals/", "factory/signals/", "sources/"))
+            if isinstance(fm.get("derived_from"), list) and r in fm["derived_from"]:
+                findings.append(Finding("ERROR", r, "decision cannot cite itself in derived_from"))
             _check_supersedes_chain(root, p, r, fm, "knowledge/decisions/", findings, match_keys=(), decision_family=family)
 
         elif rtype == "signal":
@@ -437,6 +458,10 @@ def lint_vault(
             expected_hash = compute_proposal_hash(fm)
             if fm.get("content_hash") != expected_hash:
                 findings.append(Finding("ERROR", r, f"proposal content_hash mismatch: expected {expected_hash}, got {fm.get('content_hash')}"))
+            if fm.get("status") == "published":
+                rcpt_id = fm.get("receipt_id")
+                if not isinstance(rcpt_id, str) or not (root / f"factory/receipts/{rcpt_id}.md").is_file():
+                    findings.append(Finding("ERROR", r, f"published proposal requires an existing receipt in factory/receipts/ (got {rcpt_id!r})"))
 
         elif rtype == "review":
             reviews_list.append((r, fm))

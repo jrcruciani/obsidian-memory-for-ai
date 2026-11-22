@@ -137,8 +137,11 @@ def _dump_fallback_node(value: Any, indent: int, sort_keys: bool) -> list[str]:
                     lines.append(f"{prefix}- {first}")
                     lines.extend(sub[1:])
             elif isinstance(item, list):
-                lines.append(f"{prefix}-")
-                lines.extend(_dump_fallback_node(item, indent + 2, sort_keys))
+                if not item:
+                    lines.append(f"{prefix}- []")
+                else:
+                    lines.append(f"{prefix}-")
+                    lines.extend(_dump_fallback_node(item, indent + 2, sort_keys))
             else:
                 lines.append(f"{prefix}- {_format_scalar(item)}")
         return lines
@@ -558,6 +561,21 @@ def _parse_list(raw_lines: list[str], index: int, base_indent: int) -> tuple[lis
         if _parse_block_header(rest) is not None:
             blk_val, index = _parse_block_scalar(raw_lines, index, base_indent, rest)
             items.append(blk_val)
+            continue
+        if rest == "-" or rest.startswith("- "):
+            line_idx = index - 1
+            orig_line = raw_lines[line_idx]
+            raw_after = orig_line[base_indent + 1:]
+            if raw_after.lstrip(" ").startswith("\t"):
+                raise YAMLError("tabs are not permitted for YAML indentation")
+            stripped_after = _strip_comment(orig_line)[base_indent + 1:]
+            inner_indent = base_indent + 1 + (len(stripped_after) - len(stripped_after.lstrip(" ")))
+            raw_lines[line_idx] = (" " * (base_indent + 1)) + raw_after
+            try:
+                nested_items, index = _parse_list(raw_lines, line_idx, inner_indent)
+            finally:
+                raw_lines[line_idx] = orig_line
+            items.append(nested_items)
             continue
         map_key: str | None = None
         map_val: str | None = None

@@ -248,6 +248,129 @@ class V5TransactionsAndTypesTests(unittest.TestCase):
         self.assertIn(txn_id, payload["recovered"])
         self.assertFalse((self.vault / "factory/_staging" / txn_id).exists())
 
+    def test_multiple_same_day_supersessions_generate_distinct_ids_and_history_paths(self) -> None:
+        # Seed entity + v1 of fact, skill, guidance, and decision on 2026-10-15
+        seed_ops = [
+            {"op": "upsert_entity", "entity_id": "elena-voss", "kind": "person", "display": "Elena Voss", "aliases": []},
+            {
+                "op": "create_fact",
+                "entity": "elena-voss",
+                "predicate": "base",
+                "value": "Berlin",
+                "valid_from": "2026-01-10",
+                "confidence": 0.9,
+                "assertion": "stated",
+                "trust": "owner",
+            },
+            {
+                "op": "create_skill",
+                "slug": "raman-check",
+                "title": "Raman Check v1",
+                "domain": "conservation",
+                "triggers": ["raman"],
+                "verification": ["check peak 1"],
+                "trust": "owner",
+                "confidence": 0.9,
+            },
+            {
+                "op": "create_guidance",
+                "slug": "rh-guard",
+                "title": "RH Guard v1",
+                "domain": "conservation",
+                "scope": "executor",
+                "priority": "high",
+                "policy_rule": "Keep RH <= 60%.",
+                "trust": "owner",
+            },
+            {
+                "op": "create_decision",
+                "decision_id": "DEC-010",
+                "title": "Initial RH Ceiling 60%",
+                "decided_at": "2026-10-15",
+                "domain": "conservation",
+                "summary": "Initial ceiling 60%.",
+            },
+        ]
+        seed_file = Path(self._tmp.name) / "seed_multi.json"
+        seed_file.write_text(json.dumps(seed_ops), encoding="utf-8")
+        b0 = json.loads(self.run_kf("transact", "begin", "--idempotency-key", "multi-0", "--actor", "agent-owner-00000001", "--json", check=True).stdout)["data"]
+        self.run_kf("transact", "add", "--txn-id", b0["transaction_id"], "--ops-file", str(seed_file), check=True)
+        self.run_kf("transact", "commit", "--txn-id", b0["transaction_id"], "--yes", check=True)
+
+        # Perform 3 consecutive same-day supersessions (2026-10-15) across all 4 living types:
+        # round 1 in its own transaction, and rounds 2 + 3 bundled together in one transaction!
+        def make_round_ops(n: int) -> list[dict[str, object]]:
+            return [
+                {
+                    "op": "supersede_fact",
+                    "entity": "elena-voss",
+                    "predicate": "base",
+                    "value": f"Location-{n}",
+                    "valid_from": "2026-10-15",
+                    "confidence": 0.95,
+                    "assertion": "stated",
+                    "trust": "owner",
+                },
+                {
+                    "op": "supersede_skill",
+                    "slug": "raman-check",
+                    "title": f"Raman Check round {n}",
+                    "verification": [f"check peak {n + 1}"],
+                    "trust": "owner",
+                },
+                {
+                    "op": "supersede_guidance",
+                    "slug": "rh-guard",
+                    "policy_rule": f"Keep RH <= {58 - n}%.",
+                    "trust": "owner",
+                },
+                {
+                    "op": "supersede_decision",
+                    "decision_id": "DEC-010",
+                    "summary": f"Updated ceiling round {n}.",
+                },
+            ]
+
+        f1 = Path(self._tmp.name) / "round1.json"
+        f1.write_text(json.dumps(make_round_ops(1)), encoding="utf-8")
+        b1 = json.loads(self.run_kf("transact", "begin", "--idempotency-key", "multi-1", "--actor", "agent-owner-00000001", "--json", check=True).stdout)["data"]
+        self.run_kf("transact", "add", "--txn-id", b1["transaction_id"], "--ops-file", str(f1), check=True)
+        self.run_kf("transact", "commit", "--txn-id", b1["transaction_id"], "--yes", check=True)
+
+        f23 = Path(self._tmp.name) / "round23.json"
+        f23.write_text(json.dumps([*make_round_ops(2), *make_round_ops(3)]), encoding="utf-8")
+        b23 = json.loads(self.run_kf("transact", "begin", "--idempotency-key", "multi-23", "--actor", "agent-owner-00000001", "--json", check=True).stdout)["data"]
+        self.run_kf("transact", "add", "--txn-id", b23["transaction_id"], "--ops-file", str(f23), check=True)
+        self.run_kf("transact", "commit", "--txn-id", b23["transaction_id"], "--yes", "--rebuild", check=True)
+
+        # Verify distinct archive files exist for all 3 supersessions of each type
+        self.assertTrue((self.vault / "knowledge/facts/elena-voss/base/2026-01-10.md").is_file())
+        self.assertTrue((self.vault / "knowledge/facts/elena-voss/base/2026-10-15.md").is_file())
+        self.assertTrue((self.vault / "knowledge/facts/elena-voss/base/2026-10-15-2.md").is_file())
+
+        for folder in (
+            "knowledge/skills/raman-check",
+            "knowledge/guidance/rh-guard",
+            "knowledge/decisions/DEC-010",
+        ):
+            self.assertTrue((self.vault / f"{folder}/2026-10-15.md").is_file())
+            self.assertTrue((self.vault / f"{folder}/2026-10-15-2.md").is_file())
+            self.assertTrue((self.vault / f"{folder}/2026-10-15-3.md").is_file())
+
+        # Verify 3-hop supersedes chain via `query why` for all 4 types
+        for args in (
+            ("query", "why", "fact", "elena-voss", "base", "--json"),
+            ("query", "why", "skill", "raman-check", "--json"),
+            ("query", "why", "guidance", "rh-guard", "--json"),
+            ("query", "why", "decision", "DEC-010", "--json"),
+        ):
+            why = json.loads(self.run_kf(*args, check=True).stdout)["data"]
+            self.assertEqual(len(why["supersedes_chain"]), 3, f"expected 3 prior versions for {args}")
+
+        # Strict lint passes with zero duplicate IDs and zero interval errors
+        lint = self.run_kf("lint", "--strict")
+        self.assertEqual(lint.returncode, 0, lint.stdout + lint.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()

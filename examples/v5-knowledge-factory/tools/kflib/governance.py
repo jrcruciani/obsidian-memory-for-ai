@@ -15,7 +15,9 @@ from .model import (
     file_sha256,
     format_markdown,
     iso_utc,
+    load_entities,
     load_policy,
+    parse_datetime,
     rel_path,
     safe_path,
     scan_records,
@@ -27,6 +29,7 @@ from .transact import (
     SUPPORTED_OPS,
     _op_namespace,
     compile_operations,
+    enforce_no_pending_recovery,
     enforce_op_trust_policy,
     execute_atomic_publication,
     get_agent_roles,
@@ -112,6 +115,7 @@ def create_proposal(
 ) -> dict[str, Any]:
     if status not in {"draft", "proposed"}:
         raise ValueError("initial proposal status must be 'draft' or 'proposed'")
+    enforce_no_pending_recovery(root)
     req_approvals = _enforce_proposer_allowed(root, namespace, proposer_id)
 
     if not isinstance(ops, list) or len(ops) == 0:
@@ -202,11 +206,31 @@ def create_proposal(
     if rationale:
         body_lines.extend(["", "## Rationale", "", rationale.strip()])
 
+    op_writes = compile_operations(root, enriched_ops, actor_id=proposer_id, reviewed=True)
     candidate_writes: dict[str, str | None] = {prop_rel: format_markdown(fm, "\n".join(body_lines)), **signal_updates}
-    validate_candidate_writes(root, candidate_writes)
-    for rel, content in candidate_writes.items():
-        if content is not None:
-            atomic_write_text(root / rel, content)
+    validate_candidate_writes(root, {**op_writes, **candidate_writes})
+
+    preimages: dict[str, str | None] = {}
+    for rel in candidate_writes:
+        target = safe_path(root, rel)
+        preimages[rel] = target.read_text(encoding="utf-8") if target.is_file() else None
+    try:
+        for rel in sorted(signal_updates):
+            content = signal_updates[rel]
+            if content is not None:
+                atomic_write_text(safe_path(root, rel), content)
+        prop_content = candidate_writes[prop_rel]
+        assert prop_content is not None
+        atomic_write_text(safe_path(root, prop_rel), prop_content)
+    except Exception:
+        for rel, before in preimages.items():
+            target = safe_path(root, rel)
+            if before is None:
+                if target.exists():
+                    target.unlink()
+            else:
+                atomic_write_text(target, before)
+        raise
     return dict(fm, path=prop_rel, idempotent_replay=False)
 
 
@@ -324,6 +348,79 @@ def submit_review(
     return dict(rev_fm, path=rev_rel, proposal_status=new_status)
 
 
+def _expected_op_target_slot(op: dict[str, Any]) -> str | None:
+    kind = str(op.get("op", ""))
+    if kind == "upsert_entity":
+        return "knowledge/entities.md"
+    if kind == "create_event":
+        occ = parse_datetime(op.get("occurred_at"))
+        ev_id = str(op.get("event_id") or op.get("id") or "")
+        return f"knowledge/events/{occ.date().isoformat()}/{ev_id}.md"
+    if kind in {"create_fact", "supersede_fact", "confirm_fact", "retract_fact"}:
+        return f"knowledge/facts/{op.get('entity')}/{op.get('predicate')}.md"
+    if kind in {"create_skill", "supersede_skill", "retract_skill"}:
+        return f"knowledge/skills/{op.get('slug')}.md"
+    if kind in {"create_guidance", "supersede_guidance", "retract_guidance"}:
+        return f"knowledge/guidance/{op.get('slug')}.md"
+    if kind in {"create_decision", "supersede_decision"}:
+        return f"knowledge/decisions/{op.get('decision_id') or op.get('id')}.md"
+    return None
+
+
+def _verify_published_proposal_state(root: Path, proposal_id: str, prop_fm: dict[str, Any]) -> str:
+    rcpt_id = prop_fm.get("receipt_id")
+    if not isinstance(rcpt_id, str) or not rcpt_id.strip():
+        raise ValueError(f"proposal {proposal_id} is marked published but has no receipt_id")
+    rcpt_path = safe_path(root, f"factory/receipts/{rcpt_id}.md")
+    if not rcpt_path.is_file():
+        raise ValueError(f"proposal {proposal_id} is marked published, but receipt {rcpt_id} does not exist")
+    rcpt_fm, _ = split_frontmatter(rcpt_path)
+    if (
+        rcpt_fm.get("type") != "receipt"
+        or rcpt_fm.get("status") != "committed"
+        or rcpt_fm.get("mode") != "proposal_publish"
+        or rcpt_fm.get("proposal_id") != proposal_id
+    ):
+        raise ValueError(f"proposal {proposal_id} receipt {rcpt_id} is invalid or not committed for this proposal")
+
+    touched = rcpt_fm.get("touched_files")
+    if not isinstance(touched, list) or not touched:
+        raise ValueError(f"proposal {proposal_id} receipt {rcpt_id} has no touched_files")
+    has_knowledge_touch = False
+    for entry in touched:
+        if not isinstance(entry, dict) or not isinstance(entry.get("path"), str):
+            raise ValueError(f"proposal {proposal_id} receipt {rcpt_id} has malformed touched_files entry")
+        t_rel = entry["path"]
+        if t_rel.startswith("knowledge/"):
+            has_knowledge_touch = True
+        if entry.get("action") in {"created", "updated"} and not safe_path(root, t_rel).is_file():
+            raise ValueError(
+                f"proposal {proposal_id} is marked published, but committed target {t_rel} does not exist"
+            )
+    if not has_knowledge_touch:
+        raise ValueError(f"proposal {proposal_id} receipt {rcpt_id} recorded no canonical knowledge writes")
+
+    ops = prop_fm.get("ops") or []
+    entities_cache: dict[str, dict[str, Any]] | None = None
+    for op in ops:
+        if not isinstance(op, dict):
+            continue
+        slot = _expected_op_target_slot(op)
+        if slot and not safe_path(root, slot).is_file():
+            raise ValueError(
+                f"proposal {proposal_id} is marked published, but canonical target {slot} is missing"
+            )
+        if op.get("op") == "upsert_entity":
+            if entities_cache is None:
+                entities_cache = load_entities(root)
+            eid = str(op.get("entity_id") or op.get("id") or "")
+            if eid not in entities_cache:
+                raise ValueError(
+                    f"proposal {proposal_id} is marked published, but entity {eid!r} is missing from knowledge/entities.md"
+                )
+    return rcpt_id
+
+
 def publish_proposal(
     root: Path,
     *,
@@ -334,13 +431,15 @@ def publish_proposal(
 ) -> dict[str, Any]:
     if not yes:
         raise ValueError("publish requires --yes confirmation")
+    enforce_no_pending_recovery(root, block_all_staged=True)
     prop_path, prop_fm, prop_body = load_proposal(root, proposal_id)
     prop_rel = rel_path(prop_path, root)
 
     if prop_fm.get("status") == "published":
+        verified_rcpt_id = _verify_published_proposal_state(root, proposal_id, prop_fm)
         return {
             "proposal_id": proposal_id,
-            "receipt_id": prop_fm.get("receipt_id"),
+            "receipt_id": verified_rcpt_id,
             "status": "committed",
             "idempotent_replay": True,
         }

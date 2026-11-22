@@ -527,6 +527,231 @@ class V5FactoryPipelineTests(unittest.TestCase):
         self.assertIn("Original Raman Skill Title", published_skill)
         self.assertNotIn("Proposal Wrapper Title For Skill Update", published_skill)
 
+    def test_publish_crash_blocks_replay_pending_recovery_and_writes_proposal_last(self) -> None:
+        import importlib
+        from unittest.mock import patch as mock_patch
+
+        sig = json.loads(
+            self.run_kf(
+                "capture", "signal",
+                "--emitted-by", "agent-executor-00000004",
+                "--kind", "gap",
+                "--severity", "medium",
+                "--target-namespace", "facts",
+                "--summary", "Record Elena working language",
+                "--entities", "elena-voss",
+                "--json",
+                check=True,
+            ).stdout
+        )["data"]
+        prop = json.loads(
+            self.run_kf(
+                "propose", "create",
+                "--title", "Add Elena German language fact",
+                "--namespace", "facts",
+                "--proposer", "agent-curator-00000003",
+                "--resolves-signals", sig["id"],
+                "--op", "create_fact",
+                "--entity", "elena-voss",
+                "--predicate", "language",
+                "--value", "German",
+                "--confidence", "0.95",
+                "--assertion", "stated",
+                "--trust", "agent",
+                "--derived-from", sig["path"],
+                "--json",
+                check=True,
+            ).stdout
+        )["data"]
+        prop_id = prop["id"]
+        prop_file = self.vault / prop["path"]
+        fact_file = self.vault / "knowledge/facts/elena-voss/language.md"
+        self.run_kf("review", "approve", "--proposal-id", prop_id, "--reviewer", "agent-reviewer-00000002", "--comment", "LGTM", check=True)
+
+        # 1. Crash after the very first live write: proposal MUST still be 'approved' (written last) and recovery MUST be pending
+        sys.path.insert(0, str(REPO_ROOT / "tools"))
+        try:
+            governance = importlib.import_module("kflib.governance")
+            transact = importlib.import_module("kflib.transact")
+            real_atomic_write = transact.atomic_write_text
+            live_writes: list[str] = []
+
+            def crash_after_first(path: Path, content: str) -> None:
+                real_atomic_write(path, content)
+                if path.resolve().is_relative_to(self.vault.resolve()) and "_staging" not in path.parts:
+                    live_writes.append(path.resolve().relative_to(self.vault.resolve()).as_posix())
+                    if len(live_writes) == 1:
+                        raise KeyboardInterrupt("simulated crash after first live write")
+
+            with mock_patch.object(transact, "atomic_write_text", side_effect=crash_after_first):
+                with self.assertRaises(KeyboardInterrupt):
+                    governance.publish_proposal(
+                        self.vault,
+                        proposal_id=prop_id,
+                        publisher_id="agent-reviewer-00000002",
+                        yes=True,
+                        rebuild=False,
+                    )
+            self.assertEqual(live_writes[0], "knowledge/facts/elena-voss/language.md")
+        finally:
+            sys.path.pop(0)
+
+        # Proposal was NOT marked published yet!
+        self.assertIn("status: approved", prop_file.read_text(encoding="utf-8"))
+
+        # Re-running publish while crash recovery is pending MUST fail (even if proposal were tampered to published!)
+        blocked = self.run_kf("publish", "--proposal-id", prop_id, "--publisher", "agent-reviewer-00000002", "--yes")
+        self.assertNotEqual(blocked.returncode, 0)
+        self.assertIn("recover", (blocked.stdout + blocked.stderr).lower())
+
+        # Recover cleanly
+        self.run_kf("transact", "recover", "--yes", check=True)
+        self.assertFalse(fact_file.exists())
+
+        # 2. Tamper proposal to status: published without receipt or knowledge -> publish MUST refuse false idempotent replay!
+        approved_prop_text = prop_file.read_text(encoding="utf-8")
+        fake_pub_text = approved_prop_text.replace("status: approved", "status: published").replace(
+            "receipt_id: null", "receipt_id: rcpt-missing-00000000"
+        )
+        prop_file.write_text(fake_pub_text, encoding="utf-8")
+        false_replay = self.run_kf("publish", "--proposal-id", prop_id, "--publisher", "agent-reviewer-00000002", "--yes")
+        self.assertNotEqual(false_replay.returncode, 0)
+        self.assertIn("receipt", (false_replay.stdout + false_replay.stderr).lower())
+        prop_file.write_text(approved_prop_text, encoding="utf-8")
+
+        # 3. Record exact write order on clean publish: proposal MUST be the VERY LAST live file written!
+        sys.path.insert(0, str(REPO_ROOT / "tools"))
+        try:
+            governance = importlib.import_module("kflib.governance")
+            transact = importlib.import_module("kflib.transact")
+            real_atomic_write = transact.atomic_write_text
+            ordered_live_paths: list[str] = []
+
+            def spy_write(path: Path, content: str) -> None:
+                real_atomic_write(path, content)
+                if path.resolve().is_relative_to(self.vault.resolve()) and "_staging" not in path.parts:
+                    ordered_live_paths.append(path.resolve().relative_to(self.vault.resolve()).as_posix())
+
+            with mock_patch.object(transact, "atomic_write_text", side_effect=spy_write):
+                pub_res = governance.publish_proposal(
+                    self.vault,
+                    proposal_id=prop_id,
+                    publisher_id="agent-reviewer-00000002",
+                    yes=True,
+                    rebuild=False,
+                )
+            self.assertEqual(ordered_live_paths[0], "knowledge/facts/elena-voss/language.md")
+            self.assertEqual(ordered_live_paths[-1], prop["path"], f"expected proposal written last, got {ordered_live_paths}")
+            self.assertTrue(any(p.startswith("factory/receipts/") for p in ordered_live_paths[:-1]))
+        finally:
+            sys.path.pop(0)
+
+        # 4. If canonical target knowledge is missing despite receipt + published status, publish MUST refuse false replay!
+        saved_fact = fact_file.read_bytes()
+        fact_file.unlink()
+        missing_know = self.run_kf("publish", "--proposal-id", prop_id, "--publisher", "agent-reviewer-00000002", "--yes")
+        self.assertNotEqual(missing_know.returncode, 0)
+        fact_file.write_bytes(saved_fact)
+
+        # 5. Valid committed state allows true idempotent replay and passes strict lint after rebuild
+        replay_ok = json.loads(
+            self.run_kf("publish", "--proposal-id", prop_id, "--publisher", "agent-reviewer-00000002", "--yes", "--json", check=True).stdout
+        )["data"]
+        self.assertTrue(replay_ok["idempotent_replay"])
+        self.assertEqual(replay_ok["receipt_id"], pub_res["receipt_id"])
+        self.run_kf("rebuild", check=True)
+        self.assertEqual(self.run_kf("lint", "--strict").returncode, 0)
+
+    def test_propose_create_compiles_and_lints_ops_in_shadow_before_persisting(self) -> None:
+        sig = json.loads(
+            self.run_kf(
+                "capture", "signal",
+                "--emitted-by", "agent-executor-00000004",
+                "--kind", "gap",
+                "--severity", "high",
+                "--target-namespace", "facts",
+                "--summary", "Need curated fact for Concordance",
+                "--entities", "concordance",
+                "--json",
+                check=True,
+            ).stdout
+        )["data"]
+        sig_file = self.vault / sig["path"]
+        sig_before = sig_file.read_text(encoding="utf-8")
+
+        invalid_batches = [
+            # Unknown entity
+            (
+                "facts",
+                [{
+                    "op": "create_fact",
+                    "entity": "nonexistent-entity",
+                    "predicate": "role",
+                    "value": "Ghost",
+                    "confidence": 0.8,
+                    "assertion": "stated",
+                    "trust": "agent",
+                }],
+            ),
+            # Broken derived_from & broken wikilink
+            (
+                "facts",
+                [{
+                    "op": "create_fact",
+                    "entity": "concordance",
+                    "predicate": "status-summary",
+                    "value": "Active",
+                    "confidence": 0.8,
+                    "assertion": "stated",
+                    "trust": "agent",
+                    "derived_from": ["sources/does-not-exist.md"],
+                    "body": "See [[nonexistent-target]].",
+                }],
+            ),
+            # Invalid temporal interval (valid_from >= valid_until)
+            (
+                "facts",
+                [{
+                    "op": "create_fact",
+                    "entity": "concordance",
+                    "predicate": "status-summary",
+                    "value": "Broken window",
+                    "valid_from": "2026-10-20",
+                    "valid_until": "2026-10-10",
+                    "confidence": 0.8,
+                    "assertion": "stated",
+                    "trust": "agent",
+                }],
+            ),
+            # Alias collision with existing entity 'elena-voss' (alias 'Voss')
+            (
+                "entities",
+                [{
+                    "op": "upsert_entity",
+                    "entity_id": "claire-voss",
+                    "kind": "person",
+                    "display": "Claire Voss",
+                    "aliases": ["voss"],
+                }],
+            ),
+        ]
+
+        for idx, (ns, bad_ops) in enumerate(invalid_batches):
+            ops_p = Path(self._tmp.name) / f"bad_prop_{idx}.json"
+            ops_p.write_text(json.dumps(bad_ops), encoding="utf-8")
+            res = self.run_kf(
+                "propose", "create",
+                "--title", f"Invalid proposal {idx}",
+                "--namespace", ns,
+                "--proposer", "agent-curator-00000003",
+                "--resolves-signals", sig["id"],
+                "--ops-file", str(ops_p),
+            )
+            self.assertNotEqual(res.returncode, 0, f"expected invalid proposal {idx} to fail shadow validation")
+            # Neither proposal nor signal mutation may be persisted!
+            self.assertEqual(list((self.vault / "factory/proposals").glob("*.md")), [])
+            self.assertEqual(sig_file.read_text(encoding="utf-8"), sig_before)
+
 
 if __name__ == "__main__":
     unittest.main()

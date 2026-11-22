@@ -11,6 +11,7 @@ from typing import Any
 
 from .capture import capture_signal
 from .model import (
+    AGENT_ID_RE,
     DECISION_ID_RE,
     ENTITY_KINDS,
     WIKILINK_RE,
@@ -21,12 +22,14 @@ from .model import (
     parse_date,
     parse_datetime,
     rel_path,
+    slugify,
     split_frontmatter,
     today,
     utc_now,
     write_markdown,
 )
 from .rebuild import rebuild_all
+from .schema_check import HIST_STEM_RE
 from .templates import POLICY_YAML, PREDICATES_YAML, init_vault
 from .yaml_io import dump_yaml
 
@@ -34,10 +37,51 @@ from .yaml_io import dump_yaml
 def _parse_legacy_dt(value: Any, fallback_iso: str) -> str:
     if value is None:
         return fallback_iso
+    if isinstance(value, dt.datetime):
+        return iso_utc(value if value.tzinfo else value.replace(tzinfo=dt.timezone.utc))
+    if isinstance(value, dt.date):
+        return f"{value.isoformat()}T00:00:00Z"
     if isinstance(value, str):
-        norm = value.strip().replace(" ", "T", 1) if " " in value.strip() and "T" not in value else value.strip()
+        s = value.strip()
+        if not s:
+            return fallback_iso
+        if re.fullmatch(r"\d{4}-\d{2}-\d{2}", s):
+            return f"{s}T00:00:00Z"
+        norm = s.replace(" ", "T", 1) if " " in s and "T" not in s else s
         return iso_utc(parse_datetime(norm))
     return fallback_iso
+
+
+def _normalize_legacy_date(value: Any, fallback_date: str) -> str:
+    if value is None:
+        return fallback_date
+    if isinstance(value, dt.datetime):
+        return value.date().isoformat()
+    if isinstance(value, dt.date):
+        return value.isoformat()
+    if isinstance(value, str) and len(value.strip()) >= 10:
+        cand = value.strip()[:10]
+        parsed = parse_date(cand)
+        if parsed is not None:
+            return parsed.isoformat()
+    return fallback_date
+
+
+_DEC_NUM_PREFIX_RE = re.compile(r"^DEC-(\d+)")
+_LEGACY_DEC_NUM_RE = re.compile(r"^[Dd][Ee][Cc][-_]?(\d+)(?:[-_](.*))?$")
+
+
+def _try_coerce_dec_id(token: str) -> str | None:
+    if DECISION_ID_RE.fullmatch(token):
+        return token
+    m = _LEGACY_DEC_NUM_RE.fullmatch(token.strip())
+    if not m:
+        return None
+    num = int(m.group(1))
+    rest = (m.group(2) or "").strip("-_ ")
+    suffix = f"-{slugify(rest, 24)}" if rest else ""
+    cand = f"DEC-{num:03d}{suffix}"
+    return cand if DECISION_ID_RE.fullmatch(cand) else None
 
 
 _LEGACY_ENTITY_KIND_MAP = {
@@ -58,8 +102,12 @@ def _normalize_entity_kind(value: Any) -> str:
 
 
 def _rewrite_legacy_path(path_str: str, custom_map: dict[str, str] | None = None) -> str:
-    if custom_map and path_str in custom_map:
-        return custom_map[path_str]
+    if custom_map:
+        if path_str in custom_map:
+            return custom_map[path_str]
+        if path_str.endswith(".md") and path_str[:-3] in custom_map:
+            mapped = custom_map[path_str[:-3]]
+            return mapped if mapped.endswith(".md") else f"{mapped}.md"
     if path_str in {"memory/entities.md", "memory/entities"}:
         return "knowledge/entities.md" if path_str.endswith(".md") else "knowledge/entities"
     if path_str.startswith("memory/entities/"):
@@ -231,44 +279,178 @@ def migrate_v4_to_v5(
         "# Canonical Entities\n\nMigrated from v" + str(v4_ver) + " entity index.",
     )
 
-    # Pre-compute canonical decision paths `{id}.md` (and history paths) so all references/wikilinks rewrite cleanly
-    decision_plan: list[tuple[Path, str, str, dict[str, Any], str]] = []
+    # Pre-compute canonical decision paths `{id}.md` (and history/archive paths) so all references/wikilinks rewrite cleanly
+    decision_plan: list[tuple[Path, str, str, str, dict[str, Any], str]] = []
+    archived_proposed_decisions: list[str] = []
     legacy_path_map: dict[str, str] = {}
+    superseded_dec_paths: set[str] = set()
     if (source / "memory/decisions").is_dir():
-        used_dec_paths: set[str] = set()
+        raw_dec_entries: list[tuple[Path, str, str, bool, str, dict[str, Any], str]] = []
         for dec_src in sorted((source / "memory/decisions").rglob("*.md")):
             fm, body = split_frontmatter(dec_src)
             if fm.get("type") != "decision":
                 continue
+            old_rel = f"memory/decisions/{dec_src.relative_to(source / 'memory/decisions').as_posix()}"
             raw_id = str(fm.get("id") or dec_src.stem).strip()
             is_sub = dec_src.parent != (source / "memory/decisions")
-            status_val = str(fm.get("status") or ("superseded" if is_sub else "accepted"))
-            if status_val == "superseded" or is_sub:
-                family = dec_src.parent.name if is_sub else raw_id
-                base_stem = (
-                    dec_src.stem
-                    if re.fullmatch(r"\d{4}-\d{2}-\d{2}(?:-[2-9]\d*|-1\d+)?", dec_src.stem)
-                    else str(fm.get("decided_at") or ref_today)
-                )
+            raw_status = str(fm.get("status") or ("superseded" if is_sub else "accepted")).strip()
+            if raw_status not in {"accepted", "superseded", "rejected", "proposed", "deprecated", "retracted"}:
+                raise ValueError(f"unsupported legacy decision status {raw_status!r} in {old_rel}")
+            if raw_status == "proposed":
+                rel_under = dec_src.relative_to(source / "memory/decisions")
+                dst_arch = archive_root / "decisions" / rel_under
+                dst_arch.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(dec_src, dst_arch)
+                counts["archived_v4_records"] += 1
+                arch_rel = rel_path(dst_arch, target)
+                archived_proposed_decisions.append(arch_rel)
+                legacy_path_map[old_rel] = arch_rel
+                legacy_path_map[old_rel.removesuffix(".md")] = arch_rel.removesuffix(".md")
+                legacy_path_map.setdefault(dec_src.stem, arch_rel.removesuffix(".md"))
+                if raw_id:
+                    legacy_path_map.setdefault(raw_id, arch_rel.removesuffix(".md"))
+                continue
+            raw_dec_entries.append((dec_src, old_rel, raw_id, is_sub, raw_status, fm, body))
+
+        # Group non-proposed decisions into legacy families without colliding multiple distinct heads
+        family_buckets: dict[str, list[tuple[Path, str, str, bool, str, dict[str, Any], str]]] = {}
+        claimed_head_tokens: set[str] = set()
+        # Sort so accepted heads claim their family token before rejected/superseded siblings
+        status_order = {"accepted": 0, "deprecated": 1, "retracted": 2, "rejected": 3, "superseded": 4}
+        for entry in sorted(raw_dec_entries, key=lambda e: (1 if e[3] else 0, status_order.get(e[4], 9), e[1])):
+            dec_src, old_rel, raw_id, is_sub, raw_status, fm, body = entry
+            base_tok = dec_src.parent.name if is_sub else raw_id
+            is_head_like = (not is_sub) and (raw_status != "superseded")
+            if is_head_like:
+                fam_tok = base_tok if base_tok not in claimed_head_tokens else f"{base_tok}-{dec_src.stem}"
+                while fam_tok in claimed_head_tokens:
+                    fam_tok = f"{fam_tok}-dup"
+                claimed_head_tokens.add(fam_tok)
+            else:
+                fam_tok = base_tok
+            family_buckets.setdefault(fam_tok, []).append(entry)
+
+        # Assign canonical unique DEC-NNN... family IDs
+        used_dec_families: set[str] = set()
+        used_dec_nums: set[int] = set()
+        canonical_family_map: dict[str, str] = {}
+
+        def _register_family(fam_id: str) -> None:
+            used_dec_families.add(fam_id)
+            m_num = _DEC_NUM_PREFIX_RE.match(fam_id)
+            if m_num:
+                used_dec_nums.add(int(m_num.group(1)))
+
+        # Reserve numbers/IDs from archived proposed decisions so newly allocated IDs never steal them
+        for arch_rel in archived_proposed_decisions:
+            arch_fm, _ = split_frontmatter(target / arch_rel)
+            for tok_cand in (str(arch_fm.get("id") or ""), Path(arch_rel).stem):
+                coerced_prop = _try_coerce_dec_id(tok_cand) if tok_cand else None
+                if coerced_prop:
+                    _register_family(coerced_prop)
+
+        # Pass 1: preserve already-valid DEC-NNN... IDs
+        for fam_tok, bucket in family_buckets.items():
+            cand_id: str | None = None
+            if DECISION_ID_RE.fullmatch(fam_tok):
+                cand_id = fam_tok
+            elif len(bucket) == 1 and not bucket[0][3] and DECISION_ID_RE.fullmatch(bucket[0][0].stem):
+                cand_id = bucket[0][0].stem
+            if cand_id and cand_id not in used_dec_families:
+                canonical_family_map[fam_tok] = cand_id
+                _register_family(cand_id)
+
+        # Pass 2: coerce near-DEC tokens (e.g. dec-7, DEC-42) before allocating brand-new numbers
+        for fam_tok, bucket in family_buckets.items():
+            if fam_tok in canonical_family_map:
+                continue
+            coerced = _try_coerce_dec_id(fam_tok)
+            if coerced is None and len(bucket) == 1 and not bucket[0][3]:
+                coerced = _try_coerce_dec_id(bucket[0][0].stem)
+            if coerced and coerced not in used_dec_families:
+                canonical_family_map[fam_tok] = coerced
+                _register_family(coerced)
+
+        # Pass 3: allocate sequential DEC-NNN-<slug> starting after all existing/coerced DEC numbers
+        next_dec_num = max(used_dec_nums, default=0) + 1
+        for fam_tok in family_buckets:
+            if fam_tok in canonical_family_map:
+                continue
+            slug_tail = slugify(fam_tok, 24)
+            while True:
+                allocated = f"DEC-{next_dec_num:03d}-{slug_tail}"
+                next_dec_num += 1
+                if allocated not in used_dec_families:
+                    canonical_family_map[fam_tok] = allocated
+                    _register_family(allocated)
+                    break
+
+        used_dec_paths: set[str] = set()
+        used_dec_ids: set[str] = set(used_dec_families)
+
+        for fam_tok in sorted(family_buckets.keys(), key=lambda k: canonical_family_map[k]):
+            family = canonical_family_map[fam_tok]
+            bucket = family_buckets[fam_tok]
+            heads = [e for e in bucket if (not e[3]) and e[4] != "superseded"]
+            hists = [e for e in bucket if e[3] or e[4] == "superseded"]
+            hists.sort(key=lambda e: (_normalize_legacy_date(e[5].get("decided_at"), ref_today), e[1]))
+
+            promoted_from_superseded = False
+            if not heads and hists:
+                heads = [hists.pop()]
+                promoted_from_superseded = True
+
+            emitted_hist_rels: list[str] = []
+            for dec_src, old_rel, raw_id, is_sub, raw_status, fm, body in hists:
+                if HIST_STEM_RE.fullmatch(dec_src.stem):
+                    base_stem = dec_src.stem
+                else:
+                    base_stem = _normalize_legacy_date(fm.get("decided_at"), ref_today)
+                date_prefix = base_stem[:10]
                 cand_rel = f"knowledge/decisions/{family}/{base_stem}.md"
                 seq = 2
                 while cand_rel in used_dec_paths:
-                    cand_rel = f"knowledge/decisions/{family}/{base_stem}-{seq}.md"
+                    cand_rel = f"knowledge/decisions/{family}/{date_prefix}-{seq}.md"
                     seq += 1
-                did = f"{family}-hist-{Path(cand_rel).stem.replace('-', '')}" if raw_id == family else raw_id
-                status_val = "superseded"
-            else:
-                did = raw_id
-                if not DECISION_ID_RE.fullmatch(did) and DECISION_ID_RE.fullmatch(dec_src.stem):
-                    did = dec_src.stem
-                cand_rel = f"knowledge/decisions/{did}.md"
-            used_dec_paths.add(cand_rel)
-            old_rel = f"memory/decisions/{dec_src.relative_to(source / 'memory/decisions').as_posix()}"
-            legacy_path_map[old_rel] = cand_rel
-            legacy_path_map[old_rel.removesuffix(".md")] = cand_rel.removesuffix(".md")
-            if dec_src.stem != Path(cand_rel).stem:
-                legacy_path_map[dec_src.stem] = Path(cand_rel).stem
-            decision_plan.append((dec_src, cand_rel, did, dict(fm, status=status_val), body))
+                used_dec_paths.add(cand_rel)
+                superseded_dec_paths.add(cand_rel)
+                emitted_hist_rels.append(cand_rel)
+
+                hist_base_id = f"{family}-hist-{Path(cand_rel).stem.replace('-', '')}"
+                did = hist_base_id
+                id_seq = 2
+                while did in used_dec_ids:
+                    did = f"{hist_base_id}-{id_seq}"
+                    id_seq += 1
+                used_dec_ids.add(did)
+
+                legacy_path_map[old_rel] = cand_rel
+                legacy_path_map[old_rel.removesuffix(".md")] = cand_rel.removesuffix(".md")
+                if dec_src.stem != Path(cand_rel).stem:
+                    legacy_path_map.setdefault(dec_src.stem, cand_rel.removesuffix(".md"))
+                if raw_id and raw_id != family:
+                    legacy_path_map.setdefault(raw_id, cand_rel.removesuffix(".md"))
+                decision_plan.append((dec_src, cand_rel, did, family, dict(fm, status="superseded"), body))
+
+            for dec_src, old_rel, raw_id, is_sub, raw_status, fm, body in heads:
+                cand_rel = f"knowledge/decisions/{family}.md"
+                used_dec_paths.add(cand_rel)
+                if promoted_from_superseded:
+                    head_status = "deprecated"
+                elif raw_status == "rejected":
+                    head_status = "retracted"
+                else:
+                    head_status = raw_status
+                fm_copy = dict(fm, status=head_status, _legacy_raw_status=raw_status)
+                if emitted_hist_rels and not fm_copy.get("supersedes"):
+                    fm_copy["supersedes"] = emitted_hist_rels[-1]
+                legacy_path_map[old_rel] = cand_rel
+                legacy_path_map[old_rel.removesuffix(".md")] = cand_rel.removesuffix(".md")
+                if dec_src.stem != family:
+                    legacy_path_map[dec_src.stem] = cand_rel.removesuffix(".md")
+                if raw_id and raw_id != family:
+                    legacy_path_map[raw_id] = cand_rel.removesuffix(".md")
+                decision_plan.append((dec_src, cand_rel, family, family, fm_copy, body))
 
     # 7. Migrate events (`memory/events/**`)
     if (source / "memory/events").is_dir():
@@ -295,26 +477,52 @@ def migrate_v4_to_v5(
             counts["events"] += 1
 
     # 8. Migrate decisions (`memory/decisions/**`) -> canonical `knowledge/decisions/{id}.md`
-    for dec_src, cand_rel, did, fm, body in decision_plan:
+    for dec_src, cand_rel, did, family, fm, body in decision_plan:
         evidence = [
             _rewrite_legacy_path(str(x), legacy_path_map)
             for x in [*(fm.get("derived_from") or []), *(fm.get("sources") or [])]
         ]
+        sup_target: str | None = None
+        if fm.get("supersedes"):
+            rewritten_sup = _rewrite_legacy_path(str(fm["supersedes"]), legacy_path_map)
+            if (
+                rewritten_sup in superseded_dec_paths
+                and rewritten_sup.startswith(f"knowledge/decisions/{family}/")
+                and rewritten_sup != cand_rel
+            ):
+                sup_target = rewritten_sup
+            elif rewritten_sup != cand_rel and rewritten_sup.startswith(
+                ("knowledge/decisions/", "knowledge/events/", "factory/signals/", "sources/")
+            ):
+                evidence.append(rewritten_sup)
+
+        decided_date = _normalize_legacy_date(fm.get("decided_at"), ref_today)
+        raw_dec_by = fm.get("decided_by")
+        decided_by = str(raw_dec_by) if isinstance(raw_dec_by, str) and AGENT_ID_RE.fullmatch(raw_dec_by) else "agent-owner-00000001"
+        status_str = str(fm["status"])
         dec_fm: dict[str, Any] = {
             "type": "decision",
             "id": did,
             "title": str(fm.get("title") or did),
-            "status": str(fm["status"]),
-            "decided_at": str(fm.get("decided_at") or ref_today),
-            "decided_by": "agent-owner-00000001",
+            "status": status_str,
+            "decided_at": decided_date,
+            "decided_by": decided_by,
             "domain": str(fm.get("domain") or "general"),
             "summary": str(fm.get("summary") or fm.get("title") or did),
             "entities": list(fm.get("entities") or []),
-            "derived_from": sorted(set(evidence)),
+            "derived_from": sorted(s for s in set(evidence) if s != cand_rel),
             "consequences": list(fm.get("consequences") or []),
-            "supersedes": _rewrite_legacy_path(str(fm["supersedes"]), legacy_path_map) if fm.get("supersedes") else None,
-            "pinned": bool(fm.get("pinned", True)) if fm["status"] == "accepted" else False,
+            "supersedes": sup_target,
+            "pinned": bool(fm.get("pinned", True)) if status_str == "accepted" else False,
         }
+        if status_str == "retracted":
+            dec_fm["retracted_at"] = _parse_legacy_dt(fm.get("retracted_at"), f"{decided_date}T00:00:00Z")
+            default_reason = (
+                "Migrated rejected v4 decision"
+                if fm.get("_legacy_raw_status") == "rejected"
+                else "Migrated retracted v4 decision"
+            )
+            dec_fm["retraction_reason"] = str(fm.get("retraction_reason") or fm.get("reason") or default_reason)
         write_markdown(target / cand_rel, dec_fm, _rewrite_body_wikilinks(body, legacy_path_map))
         counts["decisions"] += 1
 
@@ -453,6 +661,19 @@ def migrate_v4_to_v5(
             idempotency_key="migrate-promote-insights-guidance",
         )
         emitted_signals.append(sig2["id"])
+
+    if archived_proposed_decisions:
+        sig3 = capture_signal(
+            target,
+            emitted_by="agent-owner-00000001",
+            kind="gap",
+            severity="medium",
+            target_namespace="decisions",
+            summary=f"Review {len(archived_proposed_decisions)} unaccepted v{v4_ver} proposed decision(s) archived under sources/v4-audit-archive/decisions/",
+            evidence=archived_proposed_decisions,
+            idempotency_key="migrate-proposed-decisions",
+        )
+        emitted_signals.append(sig3["id"])
 
     # 12. Write formal `mode: migration` receipt recording every canonical file created
     touched: list[dict[str, Any]] = []

@@ -160,6 +160,32 @@ def _staging_dir(root: Path, txn_id: str) -> Path:
     return safe_path(root, f"factory/_staging/{txn_id}")
 
 
+def enforce_no_pending_recovery(
+    root: Path,
+    *,
+    allow_pending_txn_id: str | None = None,
+    block_all_staged: bool = False,
+) -> None:
+    staging_root = root / "factory/_staging"
+    if not staging_root.exists():
+        return
+    for child in sorted(staging_root.iterdir()):
+        if not child.is_dir() or not child.name.startswith("txn-"):
+            continue
+        meta_path = child / "_meta.yaml"
+        try:
+            meta = load_yaml_file(meta_path) if meta_path.is_file() else {}
+        except Exception:
+            meta = {}
+        is_crashed = (not meta_path.is_file()) or meta.get("status") == "applying" or (child / "preimages").exists()
+        if allow_pending_txn_id and child.name == allow_pending_txn_id and not is_crashed:
+            continue
+        if is_crashed or block_all_staged:
+            raise ValueError(
+                f"pending recovery required in factory/_staging/{child.name}; run `kf.py transact recover --yes` first"
+            )
+
+
 def begin_transaction(
     root: Path,
     *,
@@ -169,6 +195,7 @@ def begin_transaction(
 ) -> dict[str, Any]:
     if not idempotency_key or not idempotency_key.strip():
         raise ValueError("idempotency_key must be non-empty")
+    enforce_no_pending_recovery(root)
     enforce_direct_transact_allowed(root, actor_id)
 
     prior = find_committed_receipt_by_key(root, idempotency_key)
@@ -211,6 +238,7 @@ def begin_transaction(
 
 
 def add_operations(root: Path, txn_id: str, ops: list[dict[str, Any]]) -> dict[str, Any]:
+    enforce_no_pending_recovery(root, allow_pending_txn_id=txn_id)
     sdir = _staging_dir(root, txn_id)
     meta_path = sdir / "_meta.yaml"
     if not meta_path.is_file():
@@ -245,10 +273,30 @@ def _read_effective_text(root: Path, writes: dict[str, str | None], rel: str) ->
     return p.read_text(encoding="utf-8") if p.is_file() else None
 
 
-def _distinct_id(base_id: str, existing_id: str, suffix_hint: str) -> str:
-    cand = f"{base_id}-{suffix_hint}"
-    if cand == existing_id:
-        cand = f"{cand}-2"
+def _collect_used_ids(root: Path) -> set[str]:
+    used: set[str] = set()
+    for plane in ("knowledge", "factory/signals", "factory/proposals", "factory/reviews", "factory/receipts"):
+        for _, fm_existing, _ in scan_records(root, plane):
+            rid = fm_existing.get("id")
+            if isinstance(rid, str):
+                used.add(rid)
+    return used
+
+
+def _allocate_id(explicit_id: Any, prefix: str, suffix_hint: str | None, used_ids: set[str]) -> str:
+    if explicit_id is not None and str(explicit_id).strip():
+        cid = str(explicit_id).strip()
+        if cid in used_ids:
+            raise ValueError(f"duplicate record id {cid!r}")
+        used_ids.add(cid)
+        return cid
+    base = f"{prefix}-{suffix_hint}" if suffix_hint else prefix
+    cand = base
+    seq = 2
+    while cand in used_ids:
+        cand = f"{base}-{seq}"
+        seq += 1
+    used_ids.add(cand)
     return cand
 
 
@@ -280,6 +328,7 @@ def compile_operations(
 ) -> dict[str, str | None]:
     """Compile high-level operations into a deterministic map of {vault_rel_path: new_markdown_or_None}."""
     writes: dict[str, str | None] = {}
+    used_ids = _collect_used_ids(root)
     now = utc_now()
     now_iso = iso_utc(now)
     ref_today = today().isoformat()
@@ -338,6 +387,7 @@ def compile_operations(
             target_rel = f"knowledge/events/{occ.date().isoformat()}/{ev_id}.md"
             if _read_effective_text(root, writes, target_rel) is not None:
                 raise ValueError(f"append-only event already exists: {target_rel}")
+            _allocate_id(ev_id, ev_id, None, used_ids)
             ev_fm: dict[str, Any] = {
                 "type": "event",
                 "id": ev_id,
@@ -368,9 +418,10 @@ def compile_operations(
                 if "value" not in op:
                     raise ValueError("create_fact requires value")
                 conf = validate_confidence(op.get("confidence"))
+                fact_id = _allocate_id(op.get("id"), f"fact-{ent}-{pred}", None, used_ids)
                 fact_fm: dict[str, Any] = {
                     "type": "fact",
-                    "id": str(op.get("id") or f"fact-{ent}-{pred}"),
+                    "id": fact_id,
                     "entity": ent,
                     "predicate": pred,
                     "value": op["value"],
@@ -403,7 +454,7 @@ def compile_operations(
                 writes[hist_rel] = format_markdown(archived_fm, old_body)
 
                 conf = validate_confidence(op.get("confidence", old_fm.get("confidence")))
-                new_id = str(op.get("id") or _distinct_id(f"fact-{ent}-{pred}", str(old_fm["id"]), new_valid_from))
+                new_id = _allocate_id(op.get("id"), f"fact-{ent}-{pred}", new_valid_from, used_ids)
                 new_fm: dict[str, Any] = {
                     "type": "fact",
                     "id": new_id,
@@ -462,13 +513,21 @@ def compile_operations(
                     raise ValueError(f"skill already exists at {slot_rel}; use supersede_skill")
                 if not op.get("title"):
                     raise ValueError("create_skill requires title (pass --op-title with `propose create` or --title with `transact add`)")
+                if not op.get("domain"):
+                    raise ValueError("create_skill requires domain")
+                if not isinstance(op.get("triggers"), list) or not op.get("triggers"):
+                    raise ValueError("create_skill requires non-empty triggers list")
+                if not isinstance(op.get("verification"), list) or not op.get("verification"):
+                    raise ValueError("create_skill requires non-empty verification list")
+                ver = int(op.get("version", 1))
+                sk_id = _allocate_id(op.get("id"), f"skill-{slug}", f"v{ver}", used_ids)
                 sk_fm: dict[str, Any] = {
                     "type": "skill",
-                    "id": str(op.get("id") or f"skill-{slug}-v1"),
+                    "id": sk_id,
                     "slug": slug,
                     "title": str(op["title"]),
                     "status": "active",
-                    "version": int(op.get("version", 1)),
+                    "version": ver,
                     "domain": str(op["domain"]),
                     "triggers": list(op["triggers"]),
                     "inputs": list(op.get("inputs") or []),
@@ -492,9 +551,12 @@ def compile_operations(
                 hist_rel = _next_history_slot(root, writes, f"knowledge/skills/{slug}", ref_today)
                 writes[hist_rel] = format_markdown(dict(old_fm, status="superseded", pinned=False), old_body)
                 next_ver = int(op.get("version") or (int(old_fm.get("version", 1)) + 1))
+                if next_ver <= int(old_fm.get("version", 1)):
+                    raise ValueError(f"supersede_skill version ({next_ver}) must be > prior version ({old_fm.get('version')})")
+                sk_id = _allocate_id(op.get("id"), f"skill-{slug}", f"v{next_ver}", used_ids)
                 sk_fm = {
                     "type": "skill",
-                    "id": str(op.get("id") or _distinct_id(f"skill-{slug}", str(old_fm["id"]), f"v{next_ver}")),
+                    "id": sk_id,
                     "slug": slug,
                     "title": str(op.get("title") or old_fm["title"]),
                     "status": "active",
@@ -539,9 +601,14 @@ def compile_operations(
                     raise ValueError(f"guidance already exists at {slot_rel}; use supersede_guidance")
                 if not op.get("title"):
                     raise ValueError("create_guidance requires title (pass --op-title with `propose create` or --title with `transact add`)")
+                if not op.get("domain"):
+                    raise ValueError("create_guidance requires domain")
+                if not op.get("policy_rule"):
+                    raise ValueError("create_guidance requires policy_rule")
+                gd_id = _allocate_id(op.get("id"), f"guid-{slug}", "v1", used_ids)
                 gd_fm: dict[str, Any] = {
                     "type": "guidance",
-                    "id": str(op.get("id") or f"guid-{slug}-v1"),
+                    "id": gd_id,
                     "slug": slug,
                     "title": str(op["title"]),
                     "status": "active",
@@ -566,9 +633,10 @@ def compile_operations(
                 old_fm, old_body = split_frontmatter_text(cur_text, source=slot_rel)
                 hist_rel = _next_history_slot(root, writes, f"knowledge/guidance/{slug}", ref_today)
                 writes[hist_rel] = format_markdown(dict(old_fm, status="superseded", pinned=False), old_body)
+                gd_id = _allocate_id(op.get("id"), f"guid-{slug}", ref_today, used_ids)
                 gd_fm = {
                     "type": "guidance",
-                    "id": str(op.get("id") or _distinct_id(f"guid-{slug}", str(old_fm["id"]), ref_today)),
+                    "id": gd_id,
                     "slug": slug,
                     "title": str(op.get("title") or old_fm["title"]),
                     "status": "active",
@@ -611,6 +679,11 @@ def compile_operations(
                     raise ValueError(f"decision already exists at {slot_rel}; use supersede_decision")
                 if not op.get("title"):
                     raise ValueError("create_decision requires title (pass --op-title with `propose create` or --title with `transact add`)")
+                if not op.get("domain"):
+                    raise ValueError("create_decision requires domain")
+                if not op.get("summary"):
+                    raise ValueError("create_decision requires summary")
+                _allocate_id(dec_id, dec_id, None, used_ids)
                 dec_fm: dict[str, Any] = {
                     "type": "decision",
                     "id": dec_id,
@@ -632,7 +705,7 @@ def compile_operations(
                     raise ValueError(f"cannot supersede missing decision {slot_rel}")
                 old_fm, old_body = split_frontmatter_text(cur_text, source=slot_rel)
                 hist_rel = _next_history_slot(root, writes, f"knowledge/decisions/{dec_id}", ref_today)
-                archived_id = f"{old_fm['id']}-hist-{ref_today.replace('-', '')}"
+                archived_id = _allocate_id(None, f"{dec_id}-hist", ref_today.replace("-", ""), used_ids)
                 writes[hist_rel] = format_markdown(dict(old_fm, id=archived_id, status="superseded", pinned=False), old_body)
                 dec_fm = {
                     "type": "decision",
@@ -677,6 +750,16 @@ def validate_candidate_writes(root: Path, writes: dict[str, str | None]) -> None
             raise ValueError(f"candidate vault failed schema/semantic validation ({len(errors)} error(s)): {detail}")
 
 
+def _publication_write_order_key(rel: str) -> tuple[int, str]:
+    if rel.startswith("knowledge/"):
+        return (0, rel)
+    if rel.startswith("factory/receipts/"):
+        return (2, rel)
+    if rel.startswith("factory/proposals/"):
+        return (3, rel)
+    return (1, rel)
+
+
 def execute_atomic_publication(
     root: Path,
     *,
@@ -695,11 +778,10 @@ def execute_atomic_publication(
     receipt_body: str | None = None,
     rebuild: bool = False,
 ) -> dict[str, Any]:
+    enforce_no_pending_recovery(root, allow_pending_txn_id=staging_txn_id)
     head = git_head(root)
     if expected_revision and head != expected_revision:
         raise ValueError(f"expected_revision mismatch: Git HEAD is {head!r}, expected {expected_revision!r}")
-
-    validate_candidate_writes(root, writes)
 
     now = utc_now()
     now_iso = iso_utc(now)
@@ -707,26 +789,6 @@ def execute_atomic_publication(
     suffix = hashlib.sha256(f"{idempotency_key}:{now_iso}".encode("utf-8")).hexdigest()[:8]
     rcpt_id = receipt_id or f"rcpt-{slugify(idempotency_key, 20)}-{stamp}-{suffix}"
     txn_id = staging_txn_id or f"txn-pub-{slugify(idempotency_key, 16)}-{stamp}-{suffix}"
-
-    sdir = _staging_dir(root, txn_id)
-    preimages_dir = sdir / "preimages"
-    preimages_dir.mkdir(parents=True, exist_ok=True)
-
-    meta_path = sdir / "_meta.yaml"
-    meta: dict[str, Any] = load_yaml_file(meta_path) if meta_path.is_file() else {}
-    meta.update({
-        "transaction_id": txn_id,
-        "mode": mode,
-        "idempotency_key": idempotency_key,
-        "actor_id": actor_id,
-        "proposer_id": proposer_id,
-        "proposal_id": proposal_id,
-        "receipt_id": rcpt_id,
-        "created_at": meta.get("created_at") or now_iso,
-        "expected_revision": expected_revision,
-        "status": "applying",
-        "ops": ops,
-    })
 
     touched: list[dict[str, Any]] = []
     preimage_manifest: dict[str, dict[str, str | None]] = {}
@@ -748,31 +810,6 @@ def execute_atomic_publication(
             "before_hash": before_hash,
             "after_hash": after_hash,
         })
-
-    atomic_write_text(meta_path, dump_yaml(meta))
-    atomic_write_text(preimages_dir / "manifest.json", json.dumps(preimage_manifest, ensure_ascii=False))
-    atomic_write_text(sdir / ".pending", "applying\n")
-
-    try:
-        for rel, content in sorted(writes.items()):
-            target = safe_path(root, rel)
-            if content is None:
-                if target.exists():
-                    target.unlink()
-            else:
-                atomic_write_text(target, content)
-    except Exception as exc:
-        # Automatic rollback from persisted preimages
-        for rel, entry in preimage_manifest.items():
-            target = safe_path(root, rel)
-            before_text = entry["before_text"]
-            if before_text is None:
-                if target.exists():
-                    target.unlink()
-            else:
-                atomic_write_text(target, before_text)
-        shutil.rmtree(sdir, ignore_errors=True)
-        raise RuntimeError(f"publication failed and was rolled back cleanly: {exc}") from exc
 
     receipt_fm: dict[str, Any] = {
         "type": "receipt",
@@ -806,7 +843,67 @@ def execute_atomic_publication(
         if resolved_signals:
             body_lines.append(f"- **Resolved signals:** {', '.join(f'`{s}`' for s in resolved_signals)}")
         receipt_body = "\n".join(body_lines)
-    write_markdown(root / "factory/receipts" / f"{rcpt_id}.md", receipt_fm, receipt_body)
+
+    receipt_rel = f"factory/receipts/{rcpt_id}.md"
+    receipt_content = format_markdown(receipt_fm, receipt_body)
+    validate_candidate_writes(root, {**writes, receipt_rel: receipt_content})
+
+    rcpt_target = safe_path(root, receipt_rel)
+    rcpt_before_text = rcpt_target.read_text(encoding="utf-8") if rcpt_target.is_file() else None
+    preimage_manifest[receipt_rel] = {
+        "before_text": rcpt_before_text,
+        "before_hash": text_sha256(rcpt_before_text) if rcpt_before_text is not None else None,
+        "after_hash": text_sha256(receipt_content),
+    }
+
+    sdir = _staging_dir(root, txn_id)
+    preimages_dir = sdir / "preimages"
+    preimages_dir.mkdir(parents=True, exist_ok=True)
+
+    meta_path = sdir / "_meta.yaml"
+    meta: dict[str, Any] = load_yaml_file(meta_path) if meta_path.is_file() else {}
+    meta.update({
+        "transaction_id": txn_id,
+        "mode": mode,
+        "idempotency_key": idempotency_key,
+        "actor_id": actor_id,
+        "proposer_id": proposer_id,
+        "proposal_id": proposal_id,
+        "receipt_id": rcpt_id,
+        "created_at": meta.get("created_at") or now_iso,
+        "expected_revision": expected_revision,
+        "status": "applying",
+        "ops": ops,
+    })
+
+    atomic_write_text(meta_path, dump_yaml(meta))
+    atomic_write_text(preimages_dir / "manifest.json", json.dumps(preimage_manifest, ensure_ascii=False))
+    atomic_write_text(sdir / ".pending", "applying\n")
+
+    ordered_writes = sorted(
+        {**writes, receipt_rel: receipt_content}.items(),
+        key=lambda item: _publication_write_order_key(item[0]),
+    )
+    try:
+        for rel, content in ordered_writes:
+            target = safe_path(root, rel)
+            if content is None:
+                if target.exists():
+                    target.unlink()
+            else:
+                atomic_write_text(target, content)
+    except Exception as exc:
+        # Automatic rollback from persisted preimages
+        for rel, entry in preimage_manifest.items():
+            target = safe_path(root, rel)
+            before_text = entry["before_text"]
+            if before_text is None:
+                if target.exists():
+                    target.unlink()
+            else:
+                atomic_write_text(target, before_text)
+        shutil.rmtree(sdir, ignore_errors=True)
+        raise RuntimeError(f"publication failed and was rolled back cleanly: {exc}") from exc
 
     shutil.rmtree(sdir, ignore_errors=True)
     if rebuild:
@@ -824,6 +921,7 @@ def execute_atomic_publication(
 def commit_transaction(root: Path, txn_id: str, *, yes: bool, rebuild: bool = False) -> dict[str, Any]:
     if not yes:
         raise ValueError("commit requires --yes confirmation")
+    enforce_no_pending_recovery(root, allow_pending_txn_id=txn_id)
     sdir = _staging_dir(root, txn_id)
     meta_path = sdir / "_meta.yaml"
     if not meta_path.is_file():

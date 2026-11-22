@@ -173,6 +173,177 @@ class V5MigrationTests(unittest.TestCase):
         lint = self.run_kf("lint", "--strict")
         self.assertEqual(lint.returncode, 0, lint.stdout + lint.stderr)
 
+    def test_migrates_v4_decisions_superseded_rejected_proposed_and_non_dec_ids(self) -> None:
+        dec_dir = self.src / "memory/decisions"
+        dec_dir.mkdir(parents=True, exist_ok=True)
+
+        # 1. Standalone superseded v4 decision (no active DEC-002 head) + DEC-003 superseding it cross-family
+        (dec_dir / "DEC-002-legacy-channel.md").write_text(
+            "---\n"
+            "type: decision\n"
+            "id: DEC-002\n"
+            "title: Publish Concordance Bulletins via Static FTP\n"
+            "status: superseded\n"
+            "decided_at: '2025-11-01'\n"
+            "entities: [concordance]\n"
+            "sources: ['sources/README.md']\n"
+            "---\n\nLegacy FTP workflow.\n",
+            encoding="utf-8",
+        )
+        (dec_dir / "DEC-003-git-channel.md").write_text(
+            "---\n"
+            "type: decision\n"
+            "id: DEC-003\n"
+            "title: Publish Concordance Bulletins via Signed Git Tags\n"
+            "status: accepted\n"
+            "decided_at: '2026-04-10'\n"
+            "entities: [concordance]\n"
+            "supersedes: memory/decisions/DEC-002-legacy-channel.md\n"
+            "sources: ['sources/README.md']\n"
+            "---\n\nReplaces [[DEC-002-legacy-channel]].\n",
+            encoding="utf-8",
+        )
+
+        # 2. Same-family superseded subfile with non-DEC id + accepted head
+        sub_dir = dec_dir / "DEC-004"
+        sub_dir.mkdir(parents=True, exist_ok=True)
+        (sub_dir / "2026-01-15.md").write_text(
+            "---\n"
+            "type: decision\n"
+            "id: legacy-sub-id\n"
+            "title: Initial XRF Warmup 60s\n"
+            "status: superseded\n"
+            "decided_at: '2026-01-15'\n"
+            "entities: [concordance]\n"
+            "---\n\nInitial warmup rule.\n",
+            encoding="utf-8",
+        )
+        (dec_dir / "DEC-004.md").write_text(
+            "---\n"
+            "type: decision\n"
+            "id: DEC-004\n"
+            "title: Extend XRF Warmup to 120s\n"
+            "status: accepted\n"
+            "decided_at: '2026-06-20'\n"
+            "entities: [concordance]\n"
+            "---\n\nExtended warmup rule.\n",
+            encoding="utf-8",
+        )
+
+        # 3. Rejected v4 decision -> retracted canonical decision (excluded from active queries)
+        (dec_dir / "DEC-005-rejected-sqlite.md").write_text(
+            "---\n"
+            "type: decision\n"
+            "id: DEC-005\n"
+            "title: Store Canonical Facts in SQLite\n"
+            "status: rejected\n"
+            "decided_at: '2026-05-20'\n"
+            "entities: [strata]\n"
+            "---\n\nRejected because binary databases obscure Git diffs.\n",
+            encoding="utf-8",
+        )
+
+        # 4. Proposed (unaccepted) v4 decision -> archived to sources/v4-audit-archive/decisions/ + curation signal
+        (dec_dir / "DEC-006-draft-laser.md").write_text(
+            "---\n"
+            "type: decision\n"
+            "id: DEC-006\n"
+            "title: Draft Proposal for 1064nm Laser Trial\n"
+            "status: proposed\n"
+            "decided_at: '2026-08-01'\n"
+            "entities: [concordance]\n"
+            "---\n\nUnapproved draft.\n",
+            encoding="utf-8",
+        )
+
+        # 5. Non-DEC-NNN IDs (slug ADR id + short dec-7 id)
+        (dec_dir / "adr-si-units.md").write_text(
+            "---\n"
+            "type: decision\n"
+            "id: adr-si-units\n"
+            "title: Use SI Metric Units in Spectral Tables\n"
+            "status: accepted\n"
+            "decided_at: '2026-03-01'\n"
+            "entities: [concordance]\n"
+            "---\n\nAll spectral tables use SI units.\n",
+            encoding="utf-8",
+        )
+        (dec_dir / "short-dec.md").write_text(
+            "---\n"
+            "type: decision\n"
+            "id: dec-7\n"
+            "title: Short Number Legacy Decision\n"
+            "status: accepted\n"
+            "decided_at: '2026-03-05'\n"
+            "entities: [strata]\n"
+            "---\n\nCoerced to DEC-007.\n",
+            encoding="utf-8",
+        )
+
+        # Reference both non-DEC and proposed decisions from a fact and a note
+        ref_fact = self.src / "memory/facts/concordance/status-summary.md"
+        ref_fact.parent.mkdir(parents=True, exist_ok=True)
+        ref_fact.write_text(
+            "---\n"
+            "type: fact\n"
+            "id: fact-concordance-status\n"
+            "entity: concordance\n"
+            "predicate: status-summary\n"
+            "value: Active SI conservation protocol\n"
+            "recorded_at: '2026-08-15T10:00:00Z'\n"
+            "confidence: 0.95\n"
+            "derived_from:\n"
+            "  - memory/decisions/adr-si-units.md\n"
+            "  - memory/decisions/DEC-006-draft-laser.md\n"
+            "---\n\nSee [[adr-si-units]], [[DEC-005-rejected-sqlite]], and [[DEC-006-draft-laser]].\n",
+            encoding="utf-8",
+        )
+
+        mig = self.run_kf(
+            "migrate",
+            "--source", str(self.src),
+            "--target", str(self.dst),
+            "--yes",
+            "--json",
+            cwd=REPO_ROOT,
+            check=True,
+        )
+        mig_data = json.loads(mig.stdout)["data"]
+        self.assertGreaterEqual(len(mig_data["emitted_signals"]), 2)
+
+        # Proposed decision is archived, NOT promoted into knowledge/decisions/
+        self.assertFalse((self.dst / "knowledge/decisions/DEC-006.md").exists())
+        self.assertTrue((self.dst / "sources/v4-audit-archive/decisions/DEC-006-draft-laser.md").is_file())
+
+        # Standalone superseded DEC-002 became deprecated head; DEC-005 rejected became retracted head
+        dec2_text = (self.dst / "knowledge/decisions/DEC-002.md").read_text(encoding="utf-8")
+        self.assertIn("status: deprecated", dec2_text)
+        dec5_text = (self.dst / "knowledge/decisions/DEC-005.md").read_text(encoding="utf-8")
+        self.assertIn("status: retracted", dec5_text)
+
+        # Same-family DEC-004 has valid superseded history and DEC-004 head
+        self.assertTrue((self.dst / "knowledge/decisions/DEC-004.md").is_file())
+        self.assertTrue((self.dst / "knowledge/decisions/DEC-004/2026-01-15.md").is_file())
+
+        # Non-DEC IDs were normalized to valid DEC-NNN... IDs
+        self.assertTrue((self.dst / "knowledge/decisions/DEC-007.md").is_file())
+        adr_matches = list((self.dst / "knowledge/decisions").glob("DEC-*-adr-si-units.md"))
+        self.assertEqual(len(adr_matches), 1)
+
+        # Active decisions query excludes deprecated, retracted (rejected), and proposed decisions
+        accepted_out = self.run_kf("query", "decisions", check=True).stdout
+        self.assertIn("DEC-003", accepted_out)
+        self.assertIn("DEC-004", accepted_out)
+        self.assertIn("DEC-007", accepted_out)
+        self.assertIn("adr-si-units", accepted_out)
+        self.assertNotIn("DEC-002", accepted_out)
+        self.assertNotIn("DEC-005", accepted_out)
+        self.assertNotIn("DEC-006", accepted_out)
+
+        # Entire migrated vault passes strict lint with 0 errors and 0 warnings
+        lint = self.run_kf("lint", "--strict")
+        self.assertEqual(lint.returncode, 0, lint.stdout + lint.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()

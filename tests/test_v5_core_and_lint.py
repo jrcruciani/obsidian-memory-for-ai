@@ -422,6 +422,116 @@ class V5CoreAndLintTests(unittest.TestCase):
         self.assertIn("knowledge/decisions/DEC-010.md", combined)
         self.assertIn("supersedes target does not exist", combined)
 
+    def test_lint_rejects_retracted_facts_outside_canonical_head_path(self) -> None:
+        self.init_vault()
+        (self.vault / "knowledge/entities.md").write_text(
+            "---\n"
+            "type: entity-registry\n"
+            "id: entity-registry\n"
+            "entities:\n"
+            "  - id: elena-voss\n"
+            "    kind: person\n"
+            "    display: Elena Voss\n"
+            "    aliases: []\n"
+            "---\n",
+            encoding="utf-8",
+        )
+        retracted_md = (
+            "---\n"
+            "type: fact\n"
+            "id: fact-elena-role-retracted\n"
+            "entity: elena-voss\n"
+            "predicate: role\n"
+            "value: Mistaken role\n"
+            "status: retracted\n"
+            "observed_at: '2026-10-01T10:00:00Z'\n"
+            "confidence: 0.5\n"
+            "assertion: inferred\n"
+            "trust: owner\n"
+            "last_confirmed: '2026-10-01'\n"
+            "retracted_at: '2026-10-02T10:00:00Z'\n"
+            "retraction_reason: Retracted after verification.\n"
+            "derived_from:\n"
+            "  - sources/README.md\n"
+            "---\n"
+        )
+        for bad_rel in (
+            "knowledge/facts/rogue.md",
+            "knowledge/facts/elena-voss/wrong-predicate.md",
+            "knowledge/facts/elena-voss/role/2026-10-01.md",
+            "knowledge/notes/sneaky-fact.md",
+        ):
+            bad_path = self.vault / bad_rel
+            bad_path.parent.mkdir(parents=True, exist_ok=True)
+            bad_path.write_text(retracted_md, encoding="utf-8")
+            lint = self.run_kf("lint")
+            self.assertNotEqual(lint.returncode, 0, f"misplaced retracted fact at {bad_rel} should fail lint")
+            self.assertIn("retracted fact must reside at knowledge/facts/elena-voss/role.md", lint.stdout + lint.stderr)
+            bad_path.unlink()
+
+        canonical_path = self.vault / "knowledge/facts/elena-voss/role.md"
+        canonical_path.parent.mkdir(parents=True, exist_ok=True)
+        canonical_path.write_text(retracted_md, encoding="utf-8")
+        self.run_kf("rebuild", check=True)
+        ok_lint = self.run_kf("lint", "--strict")
+        self.assertEqual(ok_lint.returncode, 0, ok_lint.stdout + ok_lint.stderr)
+
+    def test_yaml_stdlib_fallback_parses_compact_nested_sequences(self) -> None:
+        import importlib
+
+        sys.path.insert(0, str(REPO_ROOT / "tools"))
+        try:
+            yaml_io = importlib.import_module("kflib.yaml_io")
+        finally:
+            sys.path.pop(0)
+
+        nested_yaml = (
+            "top_pairs:\n"
+            "  - - alpha\n"
+            "    - beta\n"
+            "  - - gamma\n"
+            "indentless_matrix:\n"
+            "- - 1\n"
+            "  - 2\n"
+            "- - 3\n"
+            "  - 4\n"
+            "cube:\n"
+            "  - - - deep-1\n"
+            "      - deep-2\n"
+            "    - - deep-3\n"
+            "padded:\n"
+            "  -   - spaced-a\n"
+            "      - spaced-b\n"
+            "nested_maps:\n"
+            "  - - key: v1\n"
+            "      count: 2\n"
+            "    - key: v2\n"
+            "nested_blocks:\n"
+            "  - - |-\n"
+            "      first line\n"
+            "      second line\n"
+            "    - trailing\n"
+        )
+        expected = {
+            "top_pairs": [["alpha", "beta"], ["gamma"]],
+            "indentless_matrix": [[1, 2], [3, 4]],
+            "cube": [[["deep-1", "deep-2"], ["deep-3"]]],
+            "padded": [["spaced-a", "spaced-b"]],
+            "nested_maps": [[{"key": "v1", "count": 2}, {"key": "v2"}]],
+            "nested_blocks": [["first line\nsecond line", "trailing"]],
+        }
+        parsed_fallback = yaml_io.load_yaml(nested_yaml, force_fallback=True)
+        self.assertEqual(parsed_fallback, expected)
+        if yaml_io.has_pyyaml():
+            self.assertEqual(yaml_io.load_yaml(nested_yaml, force_fallback=False), expected)
+
+        # Roundtrip including empty nested list [[]]
+        with_empty = dict(expected, empty_nested=[[]])
+        dumped = yaml_io.dump_yaml(with_empty, force_fallback=True)
+        self.assertEqual(yaml_io.load_yaml(dumped, force_fallback=True), with_empty)
+        if yaml_io.has_pyyaml():
+            self.assertEqual(yaml_io.load_yaml(dumped, force_fallback=False), with_empty)
+
 
 if __name__ == "__main__":
     unittest.main()
