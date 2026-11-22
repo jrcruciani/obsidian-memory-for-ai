@@ -143,14 +143,17 @@ def create_proposal(
             slot = safe_path(root, f"knowledge/skills/{op.get('slug')}.md")
             if not slot.is_file():
                 raise ValueError(f"target skill does not exist: {rel_path(slot, root)}")
+            op.setdefault("precondition_hash", file_sha256(slot))
         elif op["op"] in {"supersede_guidance", "retract_guidance"}:
             slot = safe_path(root, f"knowledge/guidance/{op.get('slug')}.md")
             if not slot.is_file():
                 raise ValueError(f"target guidance does not exist: {rel_path(slot, root)}")
+            op.setdefault("precondition_hash", file_sha256(slot))
         elif op["op"] == "supersede_decision":
             slot = safe_path(root, f"knowledge/decisions/{op.get('decision_id') or op.get('id')}.md")
             if not slot.is_file():
                 raise ValueError(f"target decision does not exist: {rel_path(slot, root)}")
+            op.setdefault("precondition_hash", file_sha256(slot))
         enriched_ops.append(op)
 
     sig_ids = sorted(set(resolves_signals or []))
@@ -390,9 +393,16 @@ def publish_proposal(
             sbody,
         )
 
-    pub = _publish_with_fixed_receipt_id(
+    receipt_body = (
+        f"# Publication Receipt: `{planned_rcpt_id}`\n\n"
+        f"- **Proposal:** `{proposal_id}` (by `{proposer_id}`)\n"
+        f"- **Publisher:** `{publisher_id}`\n"
+        f"- **Authorizing reviews:** {', '.join(f'`{r}`' for r in review_ids)}\n"
+        f"- **Resolved signals:** {', '.join(f'`{s}`' for s in resolved_sig_ids) or 'none'}"
+    )
+    pub = execute_atomic_publication(
         root,
-        receipt_id=planned_rcpt_id,
+        mode="proposal_publish",
         idempotency_key=ikey,
         actor_id=publisher_id,
         proposer_id=proposer_id,
@@ -401,98 +411,8 @@ def publish_proposal(
         resolved_signals=resolved_sig_ids,
         ops=ops,
         writes=writes,
+        receipt_id=planned_rcpt_id,
+        receipt_body=receipt_body,
         rebuild=rebuild,
     )
     return {"proposal_id": proposal_id, **pub}
-
-
-def _publish_with_fixed_receipt_id(
-    root: Path,
-    *,
-    receipt_id: str,
-    idempotency_key: str,
-    actor_id: str,
-    proposer_id: str,
-    proposal_id: str,
-    review_ids: list[str],
-    resolved_signals: list[str],
-    ops: list[dict[str, Any]],
-    writes: dict[str, str | None],
-    rebuild: bool,
-) -> dict[str, Any]:
-    from .model import text_sha256, write_markdown
-    from .rebuild import rebuild_all
-    from .transact import git_head
-
-    validate_candidate_writes(root, writes)
-    head = git_head(root)
-    now_iso = iso_utc(utc_now())
-
-    touched: list[dict[str, Any]] = []
-    preimages: dict[str, str | None] = {}
-    for rel, content in sorted(writes.items()):
-        target = safe_path(root, rel)
-        existed = target.is_file()
-        before_text = target.read_text(encoding="utf-8") if existed else None
-        preimages[rel] = before_text
-        touched.append({
-            "path": rel,
-            "action": "deleted" if content is None else ("updated" if existed else "created"),
-            "before_hash": text_sha256(before_text) if before_text is not None else None,
-            "after_hash": text_sha256(content) if content is not None else None,
-        })
-
-    try:
-        for rel, content in sorted(writes.items()):
-            target = safe_path(root, rel)
-            if content is None:
-                if target.exists():
-                    target.unlink()
-            else:
-                atomic_write_text(target, content)
-    except Exception as exc:
-        for rel, before_text in preimages.items():
-            target = safe_path(root, rel)
-            if before_text is None:
-                if target.exists():
-                    target.unlink()
-            else:
-                atomic_write_text(target, before_text)
-        raise RuntimeError(f"proposal publication failed and rolled back cleanly: {exc}") from exc
-
-    rcpt_fm: dict[str, Any] = {
-        "type": "receipt",
-        "id": receipt_id,
-        "mode": "proposal_publish",
-        "status": "committed",
-        "idempotency_key": idempotency_key,
-        "actor_id": actor_id,
-        "proposer_id": proposer_id,
-        "proposal_id": proposal_id,
-        "review_ids": review_ids,
-        "resolved_signals": resolved_signals,
-        "created_at": now_iso,
-        "committed_at": now_iso,
-        "expected_revision": None,
-        "parent_revision": head,
-        "ops": ops,
-        "touched_files": touched,
-        "failure_reason": None,
-    }
-    body = (
-        f"# Publication Receipt: `{receipt_id}`\n\n"
-        f"- **Proposal:** `{proposal_id}` (by `{proposer_id}`)\n"
-        f"- **Publisher:** `{actor_id}`\n"
-        f"- **Authorizing reviews:** {', '.join(f'`{r}`' for r in review_ids)}\n"
-        f"- **Resolved signals:** {', '.join(f'`{s}`' for s in resolved_signals) or 'none'}"
-    )
-    write_markdown(root / "factory/receipts" / f"{receipt_id}.md", rcpt_fm, body)
-    if rebuild:
-        rebuild_all(root)
-    return {
-        "receipt_id": receipt_id,
-        "status": "committed",
-        "mode": "proposal_publish",
-        "touched_files": touched,
-        "rebuilt": rebuild,
-    }

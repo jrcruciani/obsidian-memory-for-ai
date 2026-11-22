@@ -15,6 +15,7 @@ from typing import Any
 from .model import (
     AGENT_ID_RE,
     DECISION_ID_RE,
+    ENTITY_KINDS,
     SLUG_RE,
     TRUST_LEVELS,
     atomic_write_text,
@@ -251,6 +252,25 @@ def _distinct_id(base_id: str, existing_id: str, suffix_hint: str) -> str:
     return cand
 
 
+def _verify_precondition_hash(
+    root: Path,
+    writes: dict[str, str | None],
+    slot_rel: str,
+    op: dict[str, Any],
+) -> None:
+    expected = op.get("precondition_hash")
+    if not expected:
+        return
+    if slot_rel in writes:
+        eff = writes[slot_rel]
+        actual_hash = text_sha256(eff) if eff is not None else None
+    else:
+        p_disk = safe_path(root, slot_rel)
+        actual_hash = file_sha256(p_disk) if p_disk.is_file() else None
+    if actual_hash != expected:
+        raise ValueError(f"precondition_hash mismatch on {slot_rel} (expected {expected}, actual {actual_hash})")
+
+
 def compile_operations(
     root: Path,
     ops: list[dict[str, Any]],
@@ -284,9 +304,12 @@ def compile_operations(
             else:
                 fm, body = split_frontmatter_text(cur_text, source=ent_rel)
             ent_list = list(fm.get("entities") or [])
+            ekind = str(op.get("kind") or "concept")
+            if ekind not in ENTITY_KINDS:
+                raise ValueError(f"invalid entity kind {ekind!r}; allowed: {list(ENTITY_KINDS)}")
             new_entry = {
                 "id": eid,
-                "kind": str(op.get("kind", "entity")),
+                "kind": ekind,
                 "display": str(op.get("display", eid)),
                 "aliases": list(op.get("aliases") or []),
             }
@@ -337,11 +360,7 @@ def compile_operations(
                 raise ValueError("fact operations require slug entity and predicate")
             slot_rel = f"knowledge/facts/{ent}/{pred}.md"
             cur_text = _read_effective_text(root, writes, slot_rel)
-            if op.get("precondition_hash"):
-                p_disk = safe_path(root, slot_rel)
-                actual_hash = file_sha256(p_disk) if p_disk.is_file() else None
-                if actual_hash != op["precondition_hash"]:
-                    raise ValueError(f"precondition_hash mismatch on {slot_rel}")
+            _verify_precondition_hash(root, writes, slot_rel, op)
 
             if kind == "create_fact":
                 if cur_text is not None:
@@ -437,9 +456,12 @@ def compile_operations(
                 raise ValueError(f"skill op requires slug, got {slug!r}")
             slot_rel = f"knowledge/skills/{slug}.md"
             cur_text = _read_effective_text(root, writes, slot_rel)
+            _verify_precondition_hash(root, writes, slot_rel, op)
             if kind == "create_skill":
                 if cur_text is not None:
                     raise ValueError(f"skill already exists at {slot_rel}; use supersede_skill")
+                if not op.get("title"):
+                    raise ValueError("create_skill requires title (pass --op-title with `propose create` or --title with `transact add`)")
                 sk_fm: dict[str, Any] = {
                     "type": "skill",
                     "id": str(op.get("id") or f"skill-{slug}-v1"),
@@ -511,9 +533,12 @@ def compile_operations(
                 raise ValueError(f"guidance op requires slug, got {slug!r}")
             slot_rel = f"knowledge/guidance/{slug}.md"
             cur_text = _read_effective_text(root, writes, slot_rel)
+            _verify_precondition_hash(root, writes, slot_rel, op)
             if kind == "create_guidance":
                 if cur_text is not None:
                     raise ValueError(f"guidance already exists at {slot_rel}; use supersede_guidance")
+                if not op.get("title"):
+                    raise ValueError("create_guidance requires title (pass --op-title with `propose create` or --title with `transact add`)")
                 gd_fm: dict[str, Any] = {
                     "type": "guidance",
                     "id": str(op.get("id") or f"guid-{slug}-v1"),
@@ -580,9 +605,12 @@ def compile_operations(
                 raise ValueError(f"decision op requires decision_id matching DEC-NNN..., got {dec_id!r}")
             slot_rel = f"knowledge/decisions/{dec_id}.md"
             cur_text = _read_effective_text(root, writes, slot_rel)
+            _verify_precondition_hash(root, writes, slot_rel, op)
             if kind == "create_decision":
                 if cur_text is not None:
                     raise ValueError(f"decision already exists at {slot_rel}; use supersede_decision")
+                if not op.get("title"):
+                    raise ValueError("create_decision requires title (pass --op-title with `propose create` or --title with `transact add`)")
                 dec_fm: dict[str, Any] = {
                     "type": "decision",
                     "id": dec_id,
@@ -663,6 +691,8 @@ def execute_atomic_publication(
     proposal_id: str | None = None,
     review_ids: list[str] | None = None,
     resolved_signals: list[str] | None = None,
+    receipt_id: str | None = None,
+    receipt_body: str | None = None,
     rebuild: bool = False,
 ) -> dict[str, Any]:
     head = git_head(root)
@@ -672,24 +702,45 @@ def execute_atomic_publication(
     validate_candidate_writes(root, writes)
 
     now = utc_now()
+    now_iso = iso_utc(now)
     stamp = now.strftime("%Y%m%dt%H%M%Sz")
-    suffix = hashlib.sha256(f"{idempotency_key}:{iso_utc(now)}".encode("utf-8")).hexdigest()[:8]
-    rcpt_id = f"rcpt-{slugify(idempotency_key, 20)}-{stamp}-{suffix}"
+    suffix = hashlib.sha256(f"{idempotency_key}:{now_iso}".encode("utf-8")).hexdigest()[:8]
+    rcpt_id = receipt_id or f"rcpt-{slugify(idempotency_key, 20)}-{stamp}-{suffix}"
+    txn_id = staging_txn_id or f"txn-pub-{slugify(idempotency_key, 16)}-{stamp}-{suffix}"
 
-    sdir = _staging_dir(root, staging_txn_id or f"txn-pub-{stamp}-{suffix}")
+    sdir = _staging_dir(root, txn_id)
     preimages_dir = sdir / "preimages"
     preimages_dir.mkdir(parents=True, exist_ok=True)
-    atomic_write_text(sdir / ".pending", "applying\n")
+
+    meta_path = sdir / "_meta.yaml"
+    meta: dict[str, Any] = load_yaml_file(meta_path) if meta_path.is_file() else {}
+    meta.update({
+        "transaction_id": txn_id,
+        "mode": mode,
+        "idempotency_key": idempotency_key,
+        "actor_id": actor_id,
+        "proposer_id": proposer_id,
+        "proposal_id": proposal_id,
+        "receipt_id": rcpt_id,
+        "created_at": meta.get("created_at") or now_iso,
+        "expected_revision": expected_revision,
+        "status": "applying",
+        "ops": ops,
+    })
 
     touched: list[dict[str, Any]] = []
-    preimage_manifest: dict[str, str | None] = {}
+    preimage_manifest: dict[str, dict[str, str | None]] = {}
     for rel, content in sorted(writes.items()):
         target = safe_path(root, rel)
         existed = target.is_file()
         before_text = target.read_text(encoding="utf-8") if existed else None
-        preimage_manifest[rel] = before_text
         before_hash = text_sha256(before_text) if before_text is not None else None
         after_hash = text_sha256(content) if content is not None else None
+        preimage_manifest[rel] = {
+            "before_text": before_text,
+            "before_hash": before_hash,
+            "after_hash": after_hash,
+        }
         action = "deleted" if content is None else ("updated" if existed else "created")
         touched.append({
             "path": rel,
@@ -697,7 +748,10 @@ def execute_atomic_publication(
             "before_hash": before_hash,
             "after_hash": after_hash,
         })
+
+    atomic_write_text(meta_path, dump_yaml(meta))
     atomic_write_text(preimages_dir / "manifest.json", json.dumps(preimage_manifest, ensure_ascii=False))
+    atomic_write_text(sdir / ".pending", "applying\n")
 
     try:
         for rel, content in sorted(writes.items()):
@@ -708,9 +762,10 @@ def execute_atomic_publication(
             else:
                 atomic_write_text(target, content)
     except Exception as exc:
-        # Automatic rollback from preimages
-        for rel, before_text in preimage_manifest.items():
+        # Automatic rollback from persisted preimages
+        for rel, entry in preimage_manifest.items():
             target = safe_path(root, rel)
+            before_text = entry["before_text"]
             if before_text is None:
                 if target.exists():
                     target.unlink()
@@ -730,26 +785,28 @@ def execute_atomic_publication(
         "proposal_id": proposal_id,
         "review_ids": list(review_ids or []),
         "resolved_signals": list(resolved_signals or []),
-        "created_at": iso_utc(now),
-        "committed_at": iso_utc(now),
+        "created_at": now_iso,
+        "committed_at": now_iso,
         "expected_revision": expected_revision,
         "parent_revision": head,
         "ops": ops,
         "touched_files": touched,
         "failure_reason": None,
     }
-    body_lines = [
-        f"# Receipt: {rcpt_id}",
-        "",
-        f"- **Mode:** `{mode}`",
-        f"- **Actor:** `{actor_id}`",
-        f"- **Touched files:** {len(touched)}",
-    ]
-    if proposal_id:
-        body_lines.append(f"- **Proposal:** `{proposal_id}`")
-    if resolved_signals:
-        body_lines.append(f"- **Resolved signals:** {', '.join(f'`{s}`' for s in resolved_signals)}")
-    write_markdown(root / "factory/receipts" / f"{rcpt_id}.md", receipt_fm, "\n".join(body_lines))
+    if receipt_body is None:
+        body_lines = [
+            f"# Receipt: {rcpt_id}",
+            "",
+            f"- **Mode:** `{mode}`",
+            f"- **Actor:** `{actor_id}`",
+            f"- **Touched files:** {len(touched)}",
+        ]
+        if proposal_id:
+            body_lines.append(f"- **Proposal:** `{proposal_id}`")
+        if resolved_signals:
+            body_lines.append(f"- **Resolved signals:** {', '.join(f'`{s}`' for s in resolved_signals)}")
+        receipt_body = "\n".join(body_lines)
+    write_markdown(root / "factory/receipts" / f"{rcpt_id}.md", receipt_fm, receipt_body)
 
     shutil.rmtree(sdir, ignore_errors=True)
     if rebuild:
@@ -796,16 +853,71 @@ def rollback_transaction(root: Path, txn_id: str) -> dict[str, Any]:
     sdir = _staging_dir(root, txn_id)
     if not sdir.exists():
         raise ValueError(f"staged transaction not found: {txn_id}")
+    meta_path = sdir / "_meta.yaml"
+    meta = load_yaml_file(meta_path) if meta_path.is_file() else {}
+    receipt_id = meta.get("receipt_id")
+
     preimage_file = sdir / "preimages/manifest.json"
     if preimage_file.is_file():
-        manifest = json.loads(preimage_file.read_text(encoding="utf-8"))
-        for rel, before_text in manifest.items():
+        raw_manifest = json.loads(preimage_file.read_text(encoding="utf-8"))
+        if not isinstance(raw_manifest, dict):
+            raise ValueError(f"cannot recover {txn_id}: invalid preimage manifest")
+
+        entries: dict[str, tuple[str | None, str | None, str | None, bool]] = {}
+        for rel, item in raw_manifest.items():
+            if isinstance(item, dict):
+                b_text = item.get("before_text")
+                b_hash = item.get("before_hash")
+                a_hash = item.get("after_hash")
+                computed_b_hash = text_sha256(b_text) if b_text is not None else None
+                if computed_b_hash != b_hash:
+                    raise ValueError(
+                        f"cannot recover {txn_id}: preimage hash mismatch for {rel} "
+                        f"(expected {b_hash}, computed {computed_b_hash})"
+                    )
+                entries[rel] = (b_text, b_hash, a_hash, True)
+            else:
+                b_text = item
+                b_hash = text_sha256(b_text) if b_text is not None else None
+                entries[rel] = (b_text, b_hash, None, False)
+
+        # If receipt was already atomically written before cleanup crashed and all after_hashes match, finalize cleanly
+        if isinstance(receipt_id, str) and (root / "factory/receipts" / f"{receipt_id}.md").is_file():
+            if all(
+                (file_sha256(safe_path(root, rel)) if safe_path(root, rel).is_file() else None) == a_hash
+                for rel, (_, _, a_hash, has_hashes) in entries.items()
+                if has_hashes
+            ):
+                shutil.rmtree(sdir)
+                return {"transaction_id": txn_id, "status": "committed"}
+
+        # Verify every live target still matches either before_hash or after_hash (refuse to clobber external edits)
+        for rel, (_, b_hash, a_hash, has_hashes) in sorted(entries.items()):
             target = safe_path(root, rel)
-            if before_text is None:
+            if has_hashes:
+                live_hash = file_sha256(target) if target.is_file() else None
+                if live_hash not in {b_hash, a_hash}:
+                    raise ValueError(
+                        f"cannot recover {txn_id}: live file {rel} hash mismatch "
+                        f"(live={live_hash}, expected before_hash={b_hash} or after_hash={a_hash})"
+                    )
+
+        # Restore preimages and verify restored file hashes
+        for rel, (b_text, b_hash, _, _) in sorted(entries.items()):
+            target = safe_path(root, rel)
+            if b_text is None:
                 if target.exists():
                     target.unlink()
+                if target.exists():
+                    raise RuntimeError(f"recovery post-check failed: {rel} still exists after deletion")
             else:
-                atomic_write_text(target, before_text)
+                atomic_write_text(target, b_text)
+                restored_hash = file_sha256(target)
+                if restored_hash != b_hash:
+                    raise RuntimeError(
+                        f"recovery post-check hash mismatch for {rel}: expected {b_hash}, got {restored_hash}"
+                    )
+
     shutil.rmtree(sdir)
     return {"transaction_id": txn_id, "status": "rolled_back"}
 
@@ -847,13 +959,15 @@ def load_ops_from_cli(args: argparse.Namespace) -> list[dict[str, Any]]:
         "entity_id", "kind", "display", "entity", "predicate", "value", "valid_from",
         "valid_until", "observed_at", "assertion", "trust", "last_confirmed",
         "review_after", "reason", "event_id", "occurred_at", "summary", "slug",
-        "title", "domain", "scope", "priority", "policy_rule", "decision_id",
-        "decided_at", "body",
+        "domain", "scope", "priority", "policy_rule", "decision_id",
+        "decided_at", "precondition_hash", "body",
     )
     for k in scalar_keys:
         val = getattr(args, k, None)
         if val is not None:
             op[k] = val
+    if getattr(args, "command", None) != "propose" and getattr(args, "title", None) is not None:
+        op["title"] = args.title
     if getattr(args, "op_title", None) is not None:
         op["title"] = args.op_title
     if getattr(args, "confidence", None) is not None:
@@ -875,7 +989,7 @@ def register_op_flags(parser: argparse.ArgumentParser, *, exclude: tuple[str, ..
         "--valid-from", "--valid-until", "--observed-at", "--assertion", "--trust",
         "--last-confirmed", "--review-after", "--reason", "--event-id", "--occurred-at",
         "--summary", "--slug", "--title", "--op-title", "--domain", "--scope", "--priority",
-        "--policy-rule", "--decision-id", "--decided-at", "--body",
+        "--policy-rule", "--decision-id", "--decided-at", "--precondition-hash", "--body",
     ):
         if flag not in exclude:
             parser.add_argument(flag)

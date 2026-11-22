@@ -2,7 +2,7 @@
 
 **Use multimodal AI to analyze your photography sessions — selecting the best shots, suggesting edits, and improving your composition.**
 
-> This is an extension of the [Obsidian Memory for AI](README.md) system. It builds on the existing `sources/` layer and the Ingest operation to add a specialized workflow for photographs.
+> This is an extension of the [Obsidian Memory for AI](../../README.md) system. It builds on the existing `sources/` layer and the Ingest operation to add a specialized workflow for photographs.
 
 ---
 
@@ -450,7 +450,7 @@ if __name__ == "__main__":
 
 ### 4. Add triggers to your AI configuration
 
-If you're using the [trigger system](guide.md), add:
+If you're using [skill triggers](../../SPEC-v5.0.md#34-skill-knowledgeskillsslugmd), add:
 
 **In `triggers.md`:**
 ```markdown
@@ -752,4 +752,4 @@ These vision tokens compete with the text context window. After several batches,
 
 ---
 
-*Built as an extension of the [Obsidian Memory for AI](README.md) system. April 2026. Updated with lessons from real-world HEIF sessions and API stability testing.*
+*Built as an extension of the [Obsidian Memory for AI](../../README.md) system. April 2026. Updated with lessons from real-world HEIF sessions and API stability testing.*

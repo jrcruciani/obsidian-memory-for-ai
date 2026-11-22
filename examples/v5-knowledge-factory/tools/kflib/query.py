@@ -12,7 +12,7 @@ from .model import (
     fact_interval,
     file_sha256,
     fold_text,
-    is_current_record,
+    is_active_head,
     is_fact_visible,
     load_entities,
     parse_date,
@@ -80,7 +80,7 @@ def query_skills(
     matches: list[dict[str, Any]] = []
     lines: list[str] = []
     for path, fm, body in scan_records(root, "knowledge/skills", "skill"):
-        if not history and not is_current_record(fm):
+        if not history and not is_active_head(fm):
             continue
         if domain and fm.get("domain") != domain:
             continue
@@ -107,7 +107,7 @@ def query_guidance(
     matches: list[dict[str, Any]] = []
     lines: list[str] = []
     for path, fm, body in scan_records(root, "knowledge/guidance", "guidance"):
-        if not history and not is_current_record(fm):
+        if not history and not is_active_head(fm):
             continue
         if domain and fm.get("domain") != domain:
             continue
@@ -403,7 +403,7 @@ def query_search(
 
     if "skill" in allowed_types:
         for p, fm, body in scan_records(root, "knowledge/skills", "skill"):
-            if not is_current_record(fm):
+            if not is_active_head(fm):
                 continue
             r = rel_path(p, root)
             sk_ents = set(fm.get("entities") or [])
@@ -415,7 +415,7 @@ def query_search(
 
     if "guidance" in allowed_types:
         for p, fm, body in scan_records(root, "knowledge/guidance", "guidance"):
-            if not is_current_record(fm):
+            if not is_active_head(fm):
                 continue
             r = rel_path(p, root)
             gd_ents = set(fm.get("entities") or [])

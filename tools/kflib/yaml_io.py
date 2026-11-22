@@ -264,117 +264,301 @@ def _parse_scalar(token: str) -> Any:
     return token
 
 
-def _parse_fallback_yaml(text: str) -> Any:
-    cleaned: list[tuple[int, str]] = []
-    for raw_line in text.splitlines():
-        if "\t" in raw_line:
-            raise YAMLError("tabs are not permitted for YAML indentation")
-        stripped_comment = _strip_comment(raw_line)
-        if not stripped_comment.strip():
-            continue
-        if stripped_comment.strip() == "---":
-            continue
-        indent = len(stripped_comment) - len(stripped_comment.lstrip(" "))
-        cleaned.append((indent, stripped_comment.lstrip(" ")))
-    if not cleaned:
+_BLOCK_HEADER_RE = re.compile(r"^([|>])(?:([1-9])([+-])?|([+-])([1-9])?)?$")
+
+
+def _parse_block_header(token: str) -> tuple[str, int | None, str] | None:
+    m = _BLOCK_HEADER_RE.fullmatch(token.strip())
+    if not m:
         return None
-    val, idx = _parse_block(cleaned, 0, cleaned[0][0])
-    if idx != len(cleaned):
-        raise YAMLError(f"unexpected trailing YAML content at line {idx + 1}: {cleaned[idx][1]!r}")
+    style = m.group(1)
+    ind_str = m.group(2) or m.group(5)
+    chomp_str = m.group(3) or m.group(4) or "clip"
+    return style, (int(ind_str) if ind_str else None), chomp_str
+
+
+def _next_structural_line(raw_lines: list[str], index: int) -> tuple[int, int, str] | None:
+    n = len(raw_lines)
+    while index < n:
+        raw = raw_lines[index]
+        after_spaces = raw.lstrip(" ")
+        if after_spaces.startswith("\t"):
+            raise YAMLError("tabs are not permitted for YAML indentation")
+        stripped = _strip_comment(raw)
+        if not stripped.strip():
+            index += 1
+            continue
+        indent = len(stripped) - len(stripped.lstrip(" "))
+        content = stripped.lstrip(" ")
+        if indent == 0 and content in ("---", "..."):
+            index += 1
+            continue
+        return index, indent, content
+    return None
+
+
+def _is_mapping_entry(content: str) -> bool:
+    if ":" not in content:
+        return False
+    try:
+        _split_key_value(content)
+        return True
+    except YAMLError:
+        return False
+
+
+def _parse_block_scalar(
+    raw_lines: list[str],
+    index: int,
+    parent_indent: int,
+    header_token: str,
+) -> tuple[str, int]:
+    parsed_hdr = _parse_block_header(header_token)
+    if parsed_hdr is None:
+        raise YAMLError(f"invalid block scalar header {header_token!r}")
+    style, explicit_indent, chomp = parsed_hdr
+    n = len(raw_lines)
+
+    block_indent: int | None = (max(0, parent_indent) + explicit_indent) if explicit_indent is not None else None
+    if block_indent is None:
+        scan = index
+        max_leading_blank_spaces = 0
+        while scan < n:
+            raw = raw_lines[scan]
+            leading_spaces = len(raw) - len(raw.lstrip(" "))
+            rest = raw[leading_spaces:]
+            if rest == "":
+                max_leading_blank_spaces = max(max_leading_blank_spaces, leading_spaces)
+                scan += 1
+                continue
+            if leading_spaces == 0 and rest in ("---", "..."):
+                break
+            if leading_spaces <= parent_indent:
+                break
+            if rest.startswith("\t"):
+                raise YAMLError("tabs are not permitted for YAML indentation")
+            if max_leading_blank_spaces > leading_spaces:
+                raise YAMLError("leading blank line is more indented than first content line in block scalar")
+            block_indent = leading_spaces
+            break
+
+    collected: list[str] = []
+    if block_indent is None:
+        while index < n:
+            raw = raw_lines[index]
+            if raw.lstrip(" ") == "":
+                collected.append("")
+                index += 1
+            else:
+                break
+    else:
+        while index < n:
+            raw = raw_lines[index]
+            leading_spaces = len(raw) - len(raw.lstrip(" "))
+            rest = raw[leading_spaces:]
+            if rest == "":
+                collected.append(raw[block_indent:] if len(raw) >= block_indent else "")
+                index += 1
+                continue
+            if leading_spaces == 0 and rest in ("---", "...") and parent_indent < 0:
+                break
+            if leading_spaces < block_indent:
+                if leading_spaces <= parent_indent:
+                    break
+                if rest.startswith("\t"):
+                    raise YAMLError("tabs are not permitted for YAML indentation")
+                raise YAMLError(
+                    f"under-indented line in block scalar (indent {leading_spaces}, expected >= {block_indent})"
+                )
+            collected.append(raw[block_indent:])
+            index += 1
+
+    trailing_empty = 0
+    while collected and collected[-1] == "":
+        collected.pop()
+        trailing_empty += 1
+
+    if not collected:
+        if chomp == "+":
+            return "\n" * trailing_empty, index
+        return "", index
+
+    if style == "|":
+        core = "\n".join(collected)
+    else:
+        out_parts: list[str] = []
+        pos = 0
+        while pos < len(collected) and collected[pos] == "":
+            out_parts.append("\n")
+            pos += 1
+        prev_line = collected[pos]
+        out_parts.append(prev_line)
+        pos += 1
+        empty_between = 0
+        while pos < len(collected):
+            cur_line = collected[pos]
+            pos += 1
+            if cur_line == "":
+                empty_between += 1
+                continue
+            prev_indented = prev_line[0] in (" ", "\t")
+            cur_indented = cur_line[0] in (" ", "\t")
+            if not prev_indented and not cur_indented:
+                out_parts.append(" " if empty_between == 0 else ("\n" * empty_between))
+            else:
+                out_parts.append("\n" * (empty_between + 1))
+            out_parts.append(cur_line)
+            prev_line = cur_line
+            empty_between = 0
+        core = "".join(out_parts)
+
+    if chomp == "-":
+        return core, index
+    if chomp == "+":
+        return core + "\n" + ("\n" * trailing_empty), index
+    return core + "\n", index
+
+
+def _is_self_contained_scalar(token: str) -> bool:
+    s = token.strip()
+    return (
+        (len(s) >= 2 and s[0] == '"' and s[-1] == '"')
+        or (len(s) >= 2 and s[0] == "'" and s[-1] == "'")
+        or (len(s) >= 2 and s[0] == "[" and s[-1] == "]")
+        or (len(s) >= 2 and s[0] == "{" and s[-1] == "}")
+    )
+
+
+def _consume_wrapped_scalar(
+    raw_lines: list[str],
+    index: int,
+    min_continuation_indent: int,
+    initial: str,
+) -> tuple[str, int]:
+    if _is_self_contained_scalar(initial):
+        return initial, index
+    chunks = [initial]
+    n = len(raw_lines)
+    scan = index
+    blank_count = 0
+    while scan < n:
+        raw = raw_lines[scan]
+        if raw.lstrip(" ").startswith("\t"):
+            raise YAMLError("tabs are not permitted for YAML indentation")
+        if raw.strip() == "":
+            blank_count += 1
+            scan += 1
+            continue
+        if raw.lstrip(" ").startswith("#"):
+            break
+        stripped = _strip_comment(raw)
+        ind = len(stripped) - len(stripped.lstrip(" "))
+        txt = stripped.lstrip(" ")
+        if ind < min_continuation_indent:
+            break
+        if txt == "-" or txt.startswith("- ") or _is_mapping_entry(txt):
+            break
+        sep = ("\n" * blank_count) if blank_count > 0 else " "
+        chunks.append(sep + txt.strip())
+        scan += 1
+        index = scan
+        blank_count = 0
+    return "".join(chunks), index
+
+
+def _parse_fallback_yaml(text: str) -> Any:
+    raw_lines = text.splitlines()
+    first = _next_structural_line(raw_lines, 0)
+    if first is None:
+        return None
+    line_idx, base_indent, content = first
+    if _parse_block_header(content) is not None:
+        val, next_idx = _parse_block_scalar(raw_lines, line_idx + 1, -1, content)
+    else:
+        val, next_idx = _parse_block(raw_lines, line_idx, base_indent)
+    rem = _next_structural_line(raw_lines, next_idx)
+    if rem is not None:
+        raise YAMLError(f"unexpected trailing YAML content at line {rem[0] + 1}: {rem[2]!r}")
     return val
 
 
-def _parse_block(lines: list[tuple[int, str]], index: int, base_indent: int) -> tuple[Any, int]:
-    indent, content = lines[index]
+def _parse_block(raw_lines: list[str], index: int, base_indent: int) -> tuple[Any, int]:
+    nxt = _next_structural_line(raw_lines, index)
+    if nxt is None:
+        return None, len(raw_lines)
+    index, indent, content = nxt
     if indent != base_indent:
         raise YAMLError(f"unexpected indentation {indent} (expected {base_indent}) near {content!r}")
-    if content == "- " or content == "-" or content.startswith("- "):
-        return _parse_list(lines, index, base_indent)
-    if ":" in content:
-        is_kv = False
-        try:
-            _split_key_value(content)
-            is_kv = True
-        except YAMLError:
-            is_kv = False
-        if is_kv:
-            return _parse_dict(lines, index, base_indent)
-    return _parse_scalar(content), index + 1
+    if content == "-" or content.startswith("- "):
+        return _parse_list(raw_lines, index, base_indent)
+    if _is_mapping_entry(content):
+        return _parse_dict(raw_lines, index, base_indent)
+    if _parse_block_header(content) is not None:
+        return _parse_block_scalar(raw_lines, index + 1, base_indent - 1, content)
+    joined, next_idx = _consume_wrapped_scalar(raw_lines, index + 1, base_indent + 1, content)
+    return _parse_scalar(joined), next_idx
 
 
-def _consume_wrapped_scalar(lines: list[tuple[int, str]], index: int, min_continuation_indent: int, initial: str) -> tuple[str, int]:
-    parts = [initial]
-    n = len(lines)
-    while index < n and lines[index][0] >= min_continuation_indent:
-        parts.append(lines[index][1].strip())
-        index += 1
-    return " ".join(parts), index
-
-
-def _parse_dict(lines: list[tuple[int, str]], index: int, base_indent: int) -> tuple[dict[str, Any], int]:
+def _parse_dict(raw_lines: list[str], index: int, base_indent: int) -> tuple[dict[str, Any], int]:
     result: dict[str, Any] = {}
-    n = len(lines)
-    while index < n:
-        indent, content = lines[index]
+    while True:
+        nxt = _next_structural_line(raw_lines, index)
+        if nxt is None:
+            return result, len(raw_lines)
+        index, indent, content = nxt
         if indent < base_indent:
-            break
+            return result, index
         if indent > base_indent:
             raise YAMLError(f"unexpected over-indent in mapping near {content!r}")
         if content == "-" or content.startswith("- "):
-            break
+            return result, index
         key, val_str = _split_key_value(content)
         index += 1
         if val_str is not None:
-            if val_str in ("|", ">", "|-", ">-"):
-                block_lines: list[str] = []
-                block_indent: int | None = None
-                while index < n and lines[index][0] > base_indent:
-                    b_ind, b_text = lines[index]
-                    if block_indent is None:
-                        block_indent = b_ind
-                    pad = " " * max(0, b_ind - block_indent)
-                    block_lines.append(pad + b_text)
-                    index += 1
-                joiner = "\n" if val_str.startswith("|") else " "
-                result[key] = joiner.join(block_lines)
+            if _parse_block_header(val_str) is not None:
+                result[key], index = _parse_block_scalar(raw_lines, index, base_indent, val_str)
             else:
-                joined, index = _consume_wrapped_scalar(lines, index, base_indent + 1, val_str)
+                joined, index = _consume_wrapped_scalar(raw_lines, index, base_indent + 1, val_str)
                 result[key] = _parse_scalar(joined)
         else:
-            if index < n and lines[index][0] > base_indent:
-                child, index = _parse_block(lines, index, lines[index][0])
-                result[key] = child
-            elif index < n and lines[index][0] == base_indent and (
-                lines[index][1] == "-" or lines[index][1].startswith("- ")
+            child_nxt = _next_structural_line(raw_lines, index)
+            if child_nxt is not None and child_nxt[1] > base_indent:
+                result[key], index = _parse_block(raw_lines, child_nxt[0], child_nxt[1])
+            elif child_nxt is not None and child_nxt[1] == base_indent and (
+                child_nxt[2] == "-" or child_nxt[2].startswith("- ")
             ):
-                child, index = _parse_list(lines, index, base_indent)
-                result[key] = child
+                result[key], index = _parse_list(raw_lines, child_nxt[0], base_indent)
             else:
                 result[key] = None
-    return result, index
 
 
-def _parse_list(lines: list[tuple[int, str]], index: int, base_indent: int) -> tuple[list[Any], int]:
+def _parse_list(raw_lines: list[str], index: int, base_indent: int) -> tuple[list[Any], int]:
     items: list[Any] = []
-    n = len(lines)
-    while index < n:
-        indent, content = lines[index]
+    while True:
+        nxt = _next_structural_line(raw_lines, index)
+        if nxt is None:
+            return items, len(raw_lines)
+        index, indent, content = nxt
         if indent < base_indent:
-            break
+            return items, index
         if indent > base_indent:
             raise YAMLError(f"unexpected over-indent in sequence near {content!r}")
         if not (content == "-" or content.startswith("- ")):
-            break
+            return items, index
         rest = content[1:].strip()
         index += 1
         if not rest:
-            if index < n and lines[index][0] > base_indent:
-                child, index = _parse_block(lines, index, lines[index][0])
+            child_nxt = _next_structural_line(raw_lines, index)
+            if child_nxt is not None and child_nxt[1] > base_indent:
+                child, index = _parse_block(raw_lines, child_nxt[0], child_nxt[1])
                 items.append(child)
             else:
                 items.append(None)
             continue
-        # Check if inline mapping start `- key: value`
+        if _parse_block_header(rest) is not None:
+            blk_val, index = _parse_block_scalar(raw_lines, index, base_indent, rest)
+            items.append(blk_val)
+            continue
         map_key: str | None = None
         map_val: str | None = None
         if not (rest.startswith('"') or rest.startswith("'") or rest.startswith("[") or rest.startswith("{")):
@@ -385,26 +569,28 @@ def _parse_list(lines: list[tuple[int, str]], index: int, base_indent: int) -> t
         if map_key is not None:
             obj: dict[str, Any] = {}
             if map_val is not None:
-                joined, index = _consume_wrapped_scalar(lines, index, base_indent + 3, map_val)
-                obj[map_key] = _parse_scalar(joined)
+                if _parse_block_header(map_val) is not None:
+                    obj[map_key], index = _parse_block_scalar(raw_lines, index, base_indent + 2, map_val)
+                else:
+                    joined, index = _consume_wrapped_scalar(raw_lines, index, base_indent + 3, map_val)
+                    obj[map_key] = _parse_scalar(joined)
             else:
-                if index < n and lines[index][0] > base_indent + 2:
-                    child, index = _parse_block(lines, index, lines[index][0])
-                    obj[map_key] = child
-                elif index < n and lines[index][0] == base_indent + 2 and (
-                    lines[index][1] == "-" or lines[index][1].startswith("- ")
+                child_nxt = _next_structural_line(raw_lines, index)
+                if child_nxt is not None and child_nxt[1] > base_indent + 2:
+                    obj[map_key], index = _parse_block(raw_lines, child_nxt[0], child_nxt[1])
+                elif child_nxt is not None and child_nxt[1] == base_indent + 2 and (
+                    child_nxt[2] == "-" or child_nxt[2].startswith("- ")
                 ):
-                    child, index = _parse_list(lines, index, base_indent + 2)
-                    obj[map_key] = child
+                    obj[map_key], index = _parse_list(raw_lines, child_nxt[0], base_indent + 2)
                 else:
                     obj[map_key] = None
-            if index < n and lines[index][0] == base_indent + 2 and not (
-                lines[index][1] == "-" or lines[index][1].startswith("- ")
+            more_nxt = _next_structural_line(raw_lines, index)
+            if more_nxt is not None and more_nxt[1] == base_indent + 2 and not (
+                more_nxt[2] == "-" or more_nxt[2].startswith("- ")
             ):
-                more, index = _parse_dict(lines, index, base_indent + 2)
+                more, index = _parse_dict(raw_lines, more_nxt[0], base_indent + 2)
                 obj.update(more)
             items.append(obj)
         else:
-            joined, index = _consume_wrapped_scalar(lines, index, base_indent + 1, rest)
+            joined, index = _consume_wrapped_scalar(raw_lines, index, base_indent + 1, rest)
             items.append(_parse_scalar(joined))
-    return items, index

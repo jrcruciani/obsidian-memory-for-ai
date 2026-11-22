@@ -12,13 +12,14 @@ from typing import Any
 from .model import (
     AGENT_ID_RE,
     DECISION_ID_RE,
+    ENTITY_KINDS,
     SLUG_RE,
     TRUST_LEVELS,
     WIKILINK_RE,
     canonical_source_digest,
     fact_interval,
     fold_text,
-    is_current_record,
+    is_active_head,
     is_fact_visible,
     load_entities,
     load_manifest,
@@ -45,6 +46,9 @@ class Finding:
 
     def to_dict(self) -> dict[str, str]:
         return {"severity": self.severity, "path": self.path, "message": self.message}
+
+
+HIST_STEM_RE = re.compile(r"\d{4}-\d{2}-\d{2}(?:-[2-9]\d*|-1\d+)?")
 
 
 def _check_field_type(kind: str, value: Any) -> None:
@@ -179,11 +183,23 @@ def lint_vault(
                 if eid in entities:
                     findings.append(Finding("ERROR", "knowledge/entities.md", f"duplicate entity id '{eid}'"))
                 entities[eid] = item
+                ekind = item.get("kind")
+                if not isinstance(ekind, str) or ekind not in ENTITY_KINDS:
+                    findings.append(
+                        Finding(
+                            "ERROR",
+                            "knowledge/entities.md",
+                            f"invalid entity kind {ekind!r} on '{eid}'; allowed: {list(ENTITY_KINDS)}",
+                        )
+                    )
+                edisplay = item.get("display")
+                if not isinstance(edisplay, str) or not edisplay.strip():
+                    findings.append(Finding("ERROR", "knowledge/entities.md", f"entity '{eid}' requires non-empty display name"))
                 aliases = item.get("aliases", [])
                 if not isinstance(aliases, list):
                     findings.append(Finding("ERROR", "knowledge/entities.md", f"aliases for '{eid}' must be a list"))
                     continue
-                for token in [eid, *aliases]:
+                for token in [eid, *( [edisplay] if isinstance(edisplay, str) and edisplay.strip() else [] ), *aliases]:
                     if not isinstance(token, str) or not token.strip():
                         findings.append(Finding("ERROR", "knowledge/entities.md", f"empty alias on entity '{eid}'"))
                         continue
@@ -274,7 +290,7 @@ def lint_vault(
                 facts_by_slot[(ent, pred)].append((p, r, fm))
                 expected_head = f"knowledge/facts/{ent}/{pred}.md"
                 is_hist = p.parent == (root / f"knowledge/facts/{ent}/{pred}")
-                if is_current_record(fm):
+                if is_active_head(fm):
                     if r != expected_head:
                         findings.append(Finding("ERROR", r, f"active fact must reside at {expected_head}"))
                 elif fm.get("status") == "superseded":
@@ -313,15 +329,33 @@ def lint_vault(
 
         elif rtype == "skill":
             slug = fm.get("slug")
-            if isinstance(slug, str):
+            if not isinstance(slug, str) or not SLUG_RE.fullmatch(slug):
+                findings.append(Finding("ERROR", r, f"skill slug {slug!r} must match {SLUG_RE.pattern}"))
+            else:
                 skills_by_slug[slug].append((p, r, fm))
                 expected_head = f"knowledge/skills/{slug}.md"
-                if is_current_record(fm) and r != expected_head:
-                    findings.append(Finding("ERROR", r, f"active skill must reside at {expected_head}"))
-            if not fm.get("triggers"):
-                findings.append(Finding("ERROR", r, "skill must define at least one trigger"))
-            if not fm.get("verification"):
-                findings.append(Finding("ERROR", r, "skill must define at least one verification step"))
+                is_hist = p.parent == (root / f"knowledge/skills/{slug}") and bool(HIST_STEM_RE.fullmatch(p.stem))
+                if is_active_head(fm):
+                    if r != expected_head:
+                        findings.append(Finding("ERROR", r, f"active skill must reside at {expected_head}"))
+                elif fm.get("status") == "superseded":
+                    if not is_hist:
+                        findings.append(Finding("ERROR", r, f"superseded skill must reside at knowledge/skills/{slug}/YYYY-MM-DD[-N].md"))
+                elif r != expected_head and not is_hist:
+                    findings.append(Finding("ERROR", r, f"skill '{slug}' must reside at {expected_head} or {expected_head[:-3]}/YYYY-MM-DD[-N].md"))
+            ver = fm.get("version")
+            if isinstance(ver, int) and not isinstance(ver, bool) and ver < 1:
+                findings.append(Finding("ERROR", r, f"skill version must be >= 1, got {ver}"))
+            triggers = fm.get("triggers")
+            if not isinstance(triggers, list) or not triggers or not all(isinstance(t, str) and t.strip() for t in triggers):
+                findings.append(Finding("ERROR", r, "skill must define at least one non-empty string trigger"))
+            verif = fm.get("verification")
+            if not isinstance(verif, list) or not verif or not all(isinstance(v, str) and v.strip() for v in verif):
+                findings.append(Finding("ERROR", r, "skill must define at least one non-empty verification step"))
+            if fm.get("status") == "retracted" and (not fm.get("retracted_at") or not fm.get("retraction_reason")):
+                findings.append(Finding("ERROR", r, "retracted skill requires retracted_at and retraction_reason"))
+            if fm.get("trust") == "external" and fm.get("confidence") is None:
+                findings.append(Finding("WARN", r, "external skill should specify numeric confidence"))
             for ent in fm.get("entities", []) or []:
                 if ent not in entities:
                     findings.append(Finding("ERROR", r, f"skill references unknown entity '{ent}'"))
@@ -330,11 +364,22 @@ def lint_vault(
 
         elif rtype == "guidance":
             slug = fm.get("slug")
-            if isinstance(slug, str):
+            if not isinstance(slug, str) or not SLUG_RE.fullmatch(slug):
+                findings.append(Finding("ERROR", r, f"guidance slug {slug!r} must match {SLUG_RE.pattern}"))
+            else:
                 guidance_by_slug[slug].append((p, r, fm))
                 expected_head = f"knowledge/guidance/{slug}.md"
-                if is_current_record(fm) and r != expected_head:
-                    findings.append(Finding("ERROR", r, f"active guidance must reside at {expected_head}"))
+                is_hist = p.parent == (root / f"knowledge/guidance/{slug}") and bool(HIST_STEM_RE.fullmatch(p.stem))
+                if is_active_head(fm):
+                    if r != expected_head:
+                        findings.append(Finding("ERROR", r, f"active guidance must reside at {expected_head}"))
+                elif fm.get("status") == "superseded":
+                    if not is_hist:
+                        findings.append(Finding("ERROR", r, f"superseded guidance must reside at knowledge/guidance/{slug}/YYYY-MM-DD[-N].md"))
+                elif r != expected_head and not is_hist:
+                    findings.append(Finding("ERROR", r, f"guidance '{slug}' must reside at {expected_head} or {expected_head[:-3]}/YYYY-MM-DD[-N].md"))
+            if fm.get("status") == "retracted" and (not fm.get("retracted_at") or not fm.get("retraction_reason")):
+                findings.append(Finding("ERROR", r, "retracted guidance requires retracted_at and retraction_reason"))
             for ent in fm.get("entities", []) or []:
                 if ent not in entities:
                     findings.append(Finding("ERROR", r, f"guidance references unknown entity '{ent}'"))
@@ -343,14 +388,37 @@ def lint_vault(
 
         elif rtype == "decision":
             did = fm.get("id")
-            if isinstance(did, str) and not DECISION_ID_RE.fullmatch(did):
-                findings.append(Finding("ERROR", r, f"decision id '{did}' must match DEC-NNN..."))
-            family = p.stem if is_current_record(fm) else p.parent.name
-            decisions_by_id[family].append((p, r, fm))
+            if not isinstance(did, str) or not DECISION_ID_RE.fullmatch(did):
+                findings.append(Finding("ERROR", r, f"decision id {did!r} must match DEC-NNN..."))
+                family = p.stem
+            elif fm.get("status") == "superseded":
+                family = p.parent.name
+                is_hist = (
+                    p.parent.parent == (root / "knowledge/decisions")
+                    and bool(DECISION_ID_RE.fullmatch(family))
+                    and bool(HIST_STEM_RE.fullmatch(p.stem))
+                )
+                if not is_hist:
+                    findings.append(Finding("ERROR", r, "superseded decision must reside at knowledge/decisions/<DEC-ID>/YYYY-MM-DD[-N].md"))
+                elif not did.startswith(family):
+                    findings.append(Finding("ERROR", r, f"superseded decision id '{did}' must start with decision family '{family}'"))
+                decisions_by_id[family].append((p, r, fm))
+            else:
+                family = did
+                expected_head = f"knowledge/decisions/{did}.md"
+                if r != expected_head:
+                    findings.append(Finding("ERROR", r, f"decision '{did}' must reside at {expected_head}"))
+                decisions_by_id[family].append((p, r, fm))
+            dec_by = fm.get("decided_by")
+            if isinstance(dec_by, str) and not AGENT_ID_RE.fullmatch(dec_by):
+                findings.append(Finding("ERROR", r, f"decision decided_by '{dec_by}' must be a valid agent ID"))
+            if fm.get("status") == "retracted" and (not fm.get("retracted_at") or not fm.get("retraction_reason")):
+                findings.append(Finding("ERROR", r, "retracted decision requires retracted_at and retraction_reason"))
             for ent in fm.get("entities", []) or []:
                 if ent not in entities:
                     findings.append(Finding("ERROR", r, f"decision references unknown entity '{ent}'"))
             _check_evidence_paths(root, r, fm.get("derived_from", []), findings, ("knowledge/events/", "factory/proposals/", "factory/signals/", "sources/"))
+            _check_supersedes_chain(root, p, r, fm, "knowledge/decisions/", findings, match_keys=(), decision_family=family)
 
         elif rtype == "signal":
             for ent in fm.get("entities", []) or []:
@@ -379,10 +447,14 @@ def lint_vault(
 
     # Cross-record group checks for facts
     for (ent, pred), group in facts_by_slot.items():
-        actives = [(p, r, d) for p, r, d in group if is_current_record(d)]
+        actives = [(p, r, d) for p, r, d in group if is_active_head(d)]
+        has_head = bool(actives) or any(
+            r == f"knowledge/facts/{ent}/{pred}.md" and d.get("status") == "retracted"
+            for _, r, d in group
+        )
         if len(actives) > 1:
             findings.append(Finding("ERROR", actives[0][1], f"multiple active facts for {ent}/{pred}"))
-        elif len(actives) == 0 and any(d.get("status") == "superseded" for _, _, d in group):
+        elif not has_head and any(d.get("status") == "superseded" for _, _, d in group):
             findings.append(Finding("ERROR", group[0][1], f"superseded history chain for {ent}/{pred} has no active head"))
         for idx, (_, r1, d1) in enumerate(group):
             if d1.get("status") == "retracted":
@@ -396,6 +468,40 @@ def lint_vault(
                         findings.append(Finding("ERROR", r1, f"contradicts overlapping fact {r2}"))
                 except ValueError:
                     pass
+
+    # Cross-record group checks for skills, guidance, and decisions
+    for slug, group in skills_by_slug.items():
+        actives = [(p, r, d) for p, r, d in group if is_active_head(d)]
+        has_head = bool(actives) or any(
+            r == f"knowledge/skills/{slug}.md" and d.get("status") in {"retracted", "deprecated"}
+            for _, r, d in group
+        )
+        if len(actives) > 1:
+            findings.append(Finding("ERROR", actives[0][1], f"multiple active skills for '{slug}'"))
+        elif not has_head and any(d.get("status") == "superseded" for _, _, d in group):
+            findings.append(Finding("ERROR", group[0][1], f"superseded history chain for skill '{slug}' has no active head"))
+
+    for slug, group in guidance_by_slug.items():
+        actives = [(p, r, d) for p, r, d in group if is_active_head(d)]
+        has_head = bool(actives) or any(
+            r == f"knowledge/guidance/{slug}.md" and d.get("status") == "retracted"
+            for _, r, d in group
+        )
+        if len(actives) > 1:
+            findings.append(Finding("ERROR", actives[0][1], f"multiple active guidance records for '{slug}'"))
+        elif not has_head and any(d.get("status") == "superseded" for _, _, d in group):
+            findings.append(Finding("ERROR", group[0][1], f"superseded history chain for guidance '{slug}' has no active head"))
+
+    for family, group in decisions_by_id.items():
+        actives = [(p, r, d) for p, r, d in group if is_active_head(d)]
+        has_head = bool(actives) or any(
+            r == f"knowledge/decisions/{family}.md" and d.get("status") in {"retracted", "deprecated"}
+            for _, r, d in group
+        )
+        if len(actives) > 1:
+            findings.append(Finding("ERROR", actives[0][1], f"multiple accepted decisions for '{family}'"))
+        elif not has_head and any(d.get("status") == "superseded" for _, _, d in group):
+            findings.append(Finding("ERROR", group[0][1], f"superseded history chain for decision '{family}' has no active head"))
 
     # Cross-record review governance checks
     for r, rev in reviews_list:
@@ -473,6 +579,7 @@ def _check_supersedes_chain(
     findings: list[Finding],
     *,
     match_keys: tuple[str, ...],
+    decision_family: str | None = None,
 ) -> None:
     sup = fm.get("supersedes")
     if not sup:
@@ -486,9 +593,19 @@ def _check_supersedes_chain(
         findings.append(Finding("ERROR", rel, f"supersedes target does not exist: {sup}"))
         return
     prior_fm, _ = split_frontmatter(target)
+    if prior_fm.get("type") != fm.get("type"):
+        findings.append(Finding("ERROR", rel, f"supersedes target type mismatch: {prior_fm.get('type')!r} != {fm.get('type')!r}"))
+    if prior_fm.get("status") != "superseded":
+        findings.append(Finding("ERROR", rel, f"supersedes target {sup} must have status 'superseded', got {prior_fm.get('status')!r}"))
     for k in match_keys:
         if prior_fm.get(k) != fm.get(k):
             findings.append(Finding("ERROR", rel, f"supersedes mismatch on '{k}': {prior_fm.get(k)!r} != {fm.get(k)!r}"))
+    if decision_family is not None and target.parent.name != decision_family:
+        findings.append(Finding("ERROR", rel, f"supersedes decision target {sup} must reside under knowledge/decisions/{decision_family}/"))
+    if fm.get("type") == "skill":
+        old_ver, new_ver = prior_fm.get("version"), fm.get("version")
+        if isinstance(old_ver, int) and isinstance(new_ver, int) and new_ver <= old_ver:
+            findings.append(Finding("ERROR", rel, f"superseding skill version ({new_ver}) must be > prior version ({old_ver})"))
     if fm.get("type") == "fact":
         old_end = parse_date(prior_fm.get("valid_until"))
         new_start = parse_date(fm.get("valid_from"))
@@ -507,7 +624,14 @@ def _check_supersedes_chain(
         nxt = anc.get("supersedes")
         if not nxt:
             break
-        cursor = safe_path(root, nxt, (prefix,))
+        try:
+            cursor = safe_path(root, nxt, (prefix,))
+        except ValueError as exc:
+            findings.append(Finding("ERROR", rel, str(exc)))
+            break
+        if not cursor.is_file():
+            findings.append(Finding("ERROR", rel, f"supersedes target does not exist: {nxt}"))
+            break
 
 
 def compute_stale_records(root: Path) -> list[tuple[str, str]]:
@@ -518,7 +642,7 @@ def compute_stale_records(root: Path) -> list[tuple[str, str]]:
     stale: list[tuple[str, str]] = []
     for folder, rtype in (("knowledge/facts", "fact"), ("knowledge/skills", "skill"), ("knowledge/guidance", "guidance")):
         for path, fm, _ in scan_records(root, folder, rtype):
-            if not is_current_record(fm):
+            if not is_active_head(fm):
                 continue
             reasons: list[str] = []
             rev_after = parse_date(fm.get("review_after"))

@@ -88,6 +88,112 @@ class V5CoreAndLintTests(unittest.TestCase):
         self.assertIn("humidity (%RH)", cross["policy_rule"])
         self.assertEqual(cross["ops"][0]["entity"], "concordance")
 
+    def test_yaml_fallback_block_scalar_parity_with_pyyaml(self) -> None:
+        import importlib
+
+        sys.path.insert(0, str(REPO_ROOT / "tools"))
+        try:
+            yaml_io = importlib.import_module("kflib.yaml_io")
+        finally:
+            sys.path.pop(0)
+
+        complex_yaml = (
+            "type: proposal\n"
+            "# Top-level YAML comment\n"
+            "rationale: > # header comment\n"
+            "  First wrapped sentence # not a comment.\n"
+            "  continues on line two.\n"
+            "\n"
+            "  Second paragraph after blank line.\n"
+            "\n"
+            "    indented_example: true # preserved inside folded block\n"
+            "\n"
+            "  Closing folded line.\n"
+            "strip_folded: >-\n"
+            "  Compact folded\n"
+            "  without trailing newline\n"
+            "keep_folded: >+\n"
+            "  Folded with trailing blanks\n"
+            "\n"
+            "\n"
+            "literal_clip: |\n"
+            "  # Heading 1\n"
+            "\n"
+            "  Paragraph with #hashtag and trailing spaces:   \n"
+            "  ---\n"
+            "  ## Subheading #2\n"
+            "\n"
+            "  ```yaml\n"
+            "  key: value # comment inside fenced block\n"
+            "  ```\n"
+            "\n"
+            "  \tTab-prefixed line inside block\n"
+            "literal_strip: |-\n"
+            "  # No trailing newline\n"
+            "\n"
+            "  Line two\n"
+            "\n"
+            "literal_keep: |+\n"
+            "  # Keep trailing blank lines\n"
+            "\n"
+            "  Line two\n"
+            "\n"
+            "\n"
+            "explicit_indent: |2\n"
+            "    Two extra spaces preserved\n"
+            "  Base block indent\n"
+            "empty_literal: |\n"
+            "\n"
+            "ops:\n"
+            "  - body: |\n"
+            "      ## Procedure\n"
+            "\n"
+            "      1. Run XRF #1\n"
+            "      ---\n"
+            "      2. Log keV\n"
+            "    op: create_skill\n"
+            "  - |-\n"
+            "    # Sequence literal item\n"
+            "\n"
+            "    With blank line and #hash\n"
+        )
+        expected = {
+            "type": "proposal",
+            "rationale": (
+                "First wrapped sentence # not a comment. continues on line two.\n"
+                "Second paragraph after blank line.\n\n"
+                "  indented_example: true # preserved inside folded block\n\n"
+                "Closing folded line.\n"
+            ),
+            "strip_folded": "Compact folded without trailing newline",
+            "keep_folded": "Folded with trailing blanks\n\n\n",
+            "literal_clip": (
+                "# Heading 1\n\n"
+                "Paragraph with #hashtag and trailing spaces:   \n"
+                "---\n"
+                "## Subheading #2\n\n"
+                "```yaml\n"
+                "key: value # comment inside fenced block\n"
+                "```\n\n"
+                "\tTab-prefixed line inside block\n"
+            ),
+            "literal_strip": "# No trailing newline\n\nLine two",
+            "literal_keep": "# Keep trailing blank lines\n\nLine two\n\n\n",
+            "explicit_indent": "  Two extra spaces preserved\nBase block indent\n",
+            "empty_literal": "",
+            "ops": [
+                {
+                    "body": "## Procedure\n\n1. Run XRF #1\n---\n2. Log keV\n",
+                    "op": "create_skill",
+                },
+                "# Sequence literal item\n\nWith blank line and #hash",
+            ],
+        }
+        if yaml_io.has_pyyaml():
+            self.assertEqual(yaml_io.load_yaml(complex_yaml, force_fallback=False), expected)
+        actual = yaml_io.load_yaml(complex_yaml, force_fallback=True)
+        self.assertEqual(actual, expected)
+
     def test_init_creates_four_plane_vault_and_passes_strict_lint(self) -> None:
         self.init_vault()
         for rel in (
@@ -218,6 +324,103 @@ class V5CoreAndLintTests(unittest.TestCase):
         out = lint.stdout + lint.stderr
         self.assertIn("valid_from", out)
         self.assertIn("unresolved wikilink", out)
+
+    def test_lint_enforces_entity_kinds_and_skill_guidance_decision_invariants(self) -> None:
+        self.init_vault()
+        # 1. Invalid entity kind ('org' / 'widget') must fail lint
+        (self.vault / "knowledge/entities.md").write_text(
+            "---\n"
+            "type: entity-registry\n"
+            "id: entity-registry\n"
+            "entities:\n"
+            "  - id: bad-org\n"
+            "    kind: widget\n"
+            "    display: Bad Org\n"
+            "    aliases: []\n"
+            "---\n",
+            encoding="utf-8",
+        )
+        res_kind = self.run_kf("lint")
+        self.assertNotEqual(res_kind.returncode, 0)
+        self.assertIn("invalid entity kind", res_kind.stdout + res_kind.stderr)
+
+        # Fix entities to valid kind so we can test skill/guidance/decision invariants
+        (self.vault / "knowledge/entities.md").write_text(
+            "---\n"
+            "type: entity-registry\n"
+            "id: entity-registry\n"
+            "entities:\n"
+            "  - id: concordance\n"
+            "    kind: project\n"
+            "    display: Concordance\n"
+            "    aliases: []\n"
+            "---\n",
+            encoding="utf-8",
+        )
+
+        # 2. Orphan superseded skill without active head + retracted guidance without reason + misplaced decision & broken supersedes
+        sup_skill = self.vault / "knowledge/skills/xrf-scan/2026-09-01.md"
+        sup_skill.parent.mkdir(parents=True, exist_ok=True)
+        sup_skill.write_text(
+            "---\n"
+            "type: skill\n"
+            "id: skill-xrf-scan-v1\n"
+            "slug: xrf-scan\n"
+            "title: XRF Scan\n"
+            "status: superseded\n"
+            "version: 1\n"
+            "domain: conservation\n"
+            "triggers: [xrf]\n"
+            "verification: [check peak]\n"
+            "trust: owner\n"
+            "observed_at: '2026-09-01T10:00:00Z'\n"
+            "last_confirmed: '2026-09-01'\n"
+            "---\n",
+            encoding="utf-8",
+        )
+
+        ret_guid = self.vault / "knowledge/guidance/bad-retract.md"
+        ret_guid.write_text(
+            "---\n"
+            "type: guidance\n"
+            "id: guid-bad-retract\n"
+            "slug: bad-retract\n"
+            "title: Bad Retract\n"
+            "status: retracted\n"
+            "domain: global\n"
+            "scope: all\n"
+            "priority: normal\n"
+            "policy_rule: Outdated rule.\n"
+            "trust: owner\n"
+            "observed_at: '2026-09-01T10:00:00Z'\n"
+            "last_confirmed: '2026-09-01'\n"
+            "---\n",
+            encoding="utf-8",
+        )
+
+        bad_dec = self.vault / "knowledge/decisions/DEC-010-wrong-filename.md"
+        bad_dec.write_text(
+            "---\n"
+            "type: decision\n"
+            "id: DEC-010\n"
+            "title: Wrong Filename Decision\n"
+            "status: accepted\n"
+            "decided_at: '2026-09-01'\n"
+            "decided_by: agent-owner-00000001\n"
+            "domain: governance\n"
+            "summary: Summary text.\n"
+            "supersedes: knowledge/decisions/DEC-010/2026-01-01.md\n"
+            "---\n",
+            encoding="utf-8",
+        )
+
+        lint = self.run_kf("lint")
+        self.assertNotEqual(lint.returncode, 0)
+        combined = lint.stdout + lint.stderr
+        self.assertIn("no active head", combined)
+        self.assertIn("retracted guidance requires retracted_at and retraction_reason", combined)
+        self.assertIn("knowledge/decisions/DEC-010.md", combined)
+        self.assertIn("supersedes target does not exist", combined)
 
 
 if __name__ == "__main__":

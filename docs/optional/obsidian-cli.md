@@ -391,4 +391,4 @@ This replaces the manual "open each file, check the date, edit the frontmatter" 
 
 ---
 
-*See also: [guide.md](guide.md) for the full memory system architecture, [optional-ideas.md](optional-ideas.md) for more extensions, [plugin-guide.md](plugin-guide.md) for Claude Desktop integration.*
+*See also: [architecture.md](../architecture.md) for the full Knowledge Factory architecture, [optional-ideas.md](optional-ideas.md) for more extensions, [integrations.md](../integrations.md) for host-agent and desktop integrations.*

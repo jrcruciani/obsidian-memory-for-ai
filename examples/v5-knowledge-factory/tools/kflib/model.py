@@ -20,6 +20,7 @@ AGENT_ID_RE = re.compile(r"^agent-[a-z0-9][a-z0-9-]*-[a-f0-9]{8,}$")
 DECISION_ID_RE = re.compile(r"^DEC-[0-9]{3,}[a-z0-9-]*$")
 
 TRUST_LEVELS = {"external": 0, "agent": 1, "owner": 2}
+ENTITY_KINDS = ("person", "project", "organization", "instrument", "system", "place", "concept")
 ASSERTION_KINDS = ("stated", "observed", "inferred")
 SIGNAL_KINDS = (
     "gap",
@@ -237,20 +238,30 @@ def fact_interval(data: dict[str, Any]) -> tuple[dt.date, dt.date]:
     return start, end
 
 
-def is_current_record(data: dict[str, Any]) -> bool:
+def is_active_head(data: dict[str, Any]) -> bool:
+    """Return True if the record is the structural active/accepted head for its slot."""
+    rtype = data.get("type")
     status = data.get("status", "active")
-    if status in {"superseded", "retracted", "deprecated"}:
-        return False
-    return data.get("valid_until") is None
+    if rtype == "decision":
+        return status == "accepted"
+    return status == "active"
+
+
+def is_current_record(data: dict[str, Any]) -> bool:
+    if data.get("type") == "fact":
+        return is_fact_visible(data)
+    return is_active_head(data)
 
 
 def is_fact_visible(data: dict[str, Any], as_of: dt.date | None = None) -> bool:
-    if data.get("status") == "retracted":
+    status = data.get("status", "active")
+    if status == "retracted":
         return False
-    if as_of is None:
-        return is_current_record(data)
+    if status == "superseded" and data.get("valid_until") is None:
+        return False
+    ref = as_of or today()
     start, end = fact_interval(data)
-    return start <= as_of < end
+    return start <= ref < end
 
 
 def scan_records(root: Path, rel_folder: str, record_type: str | None = None) -> list[tuple[Path, dict[str, Any], str]]:

@@ -11,6 +11,8 @@ from typing import Any
 
 from .capture import capture_signal
 from .model import (
+    DECISION_ID_RE,
+    ENTITY_KINDS,
     WIKILINK_RE,
     atomic_write_text,
     file_sha256,
@@ -38,7 +40,30 @@ def _parse_legacy_dt(value: Any, fallback_iso: str) -> str:
     return fallback_iso
 
 
-def _rewrite_legacy_path(path_str: str) -> str:
+_LEGACY_ENTITY_KIND_MAP = {
+    "org": "organization",
+    "tool": "instrument",
+    "entity": "concept",
+}
+
+
+def _normalize_entity_kind(value: Any) -> str:
+    if isinstance(value, str):
+        cleaned = value.strip()
+        if cleaned in ENTITY_KINDS:
+            return cleaned
+        if cleaned in _LEGACY_ENTITY_KIND_MAP:
+            return _LEGACY_ENTITY_KIND_MAP[cleaned]
+    return "concept"
+
+
+def _rewrite_legacy_path(path_str: str, custom_map: dict[str, str] | None = None) -> str:
+    if custom_map and path_str in custom_map:
+        return custom_map[path_str]
+    if path_str in {"memory/entities.md", "memory/entities"}:
+        return "knowledge/entities.md" if path_str.endswith(".md") else "knowledge/entities"
+    if path_str.startswith("memory/entities/"):
+        return "knowledge/entities.md" if path_str.endswith(".md") else "knowledge/entities"
     rewrites = (
         ("memory/facts/", "knowledge/facts/"),
         ("memory/events/", "knowledge/events/"),
@@ -54,11 +79,11 @@ def _rewrite_legacy_path(path_str: str) -> str:
     return path_str
 
 
-def _rewrite_body_wikilinks(body: str) -> str:
+def _rewrite_body_wikilinks(body: str, custom_map: dict[str, str] | None = None) -> str:
     def _sub(match: re.Match[str]) -> str:
         full = match.group(0)
         target = match.group(1).strip()
-        new_target = _rewrite_legacy_path(target)
+        new_target = _rewrite_legacy_path(target, custom_map)
         if new_target == target:
             return full
         return full.replace(target, new_target, 1)
@@ -157,25 +182,47 @@ def migrate_v4_to_v5(
             known_agent_ids.add(ag["id"])
     atomic_write_text(target / "factory/schema/policy.yaml", dump_yaml(policy))
 
-    # 6. Migrate entities (`memory/entities.md` + optional `memory/entities/*.md`)
+    # 6. Migrate entities (`memory/entities.md` + `memory/entities/*.md`)
     entities_by_id: dict[str, dict[str, Any]] = {}
     if (source / "memory/entities.md").is_file():
         efm, _ = split_frontmatter(source / "memory/entities.md")
         for ent in efm.get("entities", []) or []:
             if isinstance(ent, dict) and isinstance(ent.get("id"), str):
-                entities_by_id[ent["id"]] = {
+                entry_obj: dict[str, Any] = {
                     "id": ent["id"],
-                    "kind": str(ent.get("kind", "entity")),
+                    "kind": _normalize_entity_kind(ent.get("kind")),
                     "display": str(ent.get("display", ent["id"])),
                     "aliases": list(ent.get("aliases") or []),
                 }
+                if ent.get("summary"):
+                    entry_obj["summary"] = str(ent["summary"])
+                entities_by_id[ent["id"]] = entry_obj
     if (source / "memory/entities").is_dir():
         for ep in sorted((source / "memory/entities").rglob("*.md")):
-            efm, _ = split_frontmatter(ep)
-            eid = efm.get("id")
-            if isinstance(eid, str) and eid in entities_by_id:
+            efm, ebody = split_frontmatter(ep)
+            eid = str(efm.get("id") or ep.stem).strip()
+            if not eid:
+                continue
+            if eid in entities_by_id:
                 extra = [a for a in (efm.get("aliases") or []) if a not in entities_by_id[eid]["aliases"]]
                 entities_by_id[eid]["aliases"].extend(extra)
+                if efm.get("display") and entities_by_id[eid]["display"] == eid:
+                    entities_by_id[eid]["display"] = str(efm["display"])
+                if efm.get("kind") and entities_by_id[eid]["kind"] == "concept":
+                    entities_by_id[eid]["kind"] = _normalize_entity_kind(efm["kind"])
+                if efm.get("summary") and "summary" not in entities_by_id[eid]:
+                    entities_by_id[eid]["summary"] = str(efm["summary"])
+            else:
+                heading = next((ln.lstrip("# ").strip() for ln in ebody.splitlines() if ln.startswith("# ")), eid)
+                new_ent: dict[str, Any] = {
+                    "id": eid,
+                    "kind": _normalize_entity_kind(efm.get("kind")),
+                    "display": str(efm.get("display") or efm.get("title") or heading),
+                    "aliases": list(efm.get("aliases") or []),
+                }
+                if efm.get("summary"):
+                    new_ent["summary"] = str(efm["summary"])
+                entities_by_id[eid] = new_ent
     ent_list = [entities_by_id[k] for k in sorted(entities_by_id)]
     counts["entities"] = len(ent_list)
     write_markdown(
@@ -183,6 +230,45 @@ def migrate_v4_to_v5(
         {"type": "entity-registry", "id": "entity-registry", "entities": ent_list},
         "# Canonical Entities\n\nMigrated from v" + str(v4_ver) + " entity index.",
     )
+
+    # Pre-compute canonical decision paths `{id}.md` (and history paths) so all references/wikilinks rewrite cleanly
+    decision_plan: list[tuple[Path, str, str, dict[str, Any], str]] = []
+    legacy_path_map: dict[str, str] = {}
+    if (source / "memory/decisions").is_dir():
+        used_dec_paths: set[str] = set()
+        for dec_src in sorted((source / "memory/decisions").rglob("*.md")):
+            fm, body = split_frontmatter(dec_src)
+            if fm.get("type") != "decision":
+                continue
+            raw_id = str(fm.get("id") or dec_src.stem).strip()
+            is_sub = dec_src.parent != (source / "memory/decisions")
+            status_val = str(fm.get("status") or ("superseded" if is_sub else "accepted"))
+            if status_val == "superseded" or is_sub:
+                family = dec_src.parent.name if is_sub else raw_id
+                base_stem = (
+                    dec_src.stem
+                    if re.fullmatch(r"\d{4}-\d{2}-\d{2}(?:-[2-9]\d*|-1\d+)?", dec_src.stem)
+                    else str(fm.get("decided_at") or ref_today)
+                )
+                cand_rel = f"knowledge/decisions/{family}/{base_stem}.md"
+                seq = 2
+                while cand_rel in used_dec_paths:
+                    cand_rel = f"knowledge/decisions/{family}/{base_stem}-{seq}.md"
+                    seq += 1
+                did = f"{family}-hist-{Path(cand_rel).stem.replace('-', '')}" if raw_id == family else raw_id
+                status_val = "superseded"
+            else:
+                did = raw_id
+                if not DECISION_ID_RE.fullmatch(did) and DECISION_ID_RE.fullmatch(dec_src.stem):
+                    did = dec_src.stem
+                cand_rel = f"knowledge/decisions/{did}.md"
+            used_dec_paths.add(cand_rel)
+            old_rel = f"memory/decisions/{dec_src.relative_to(source / 'memory/decisions').as_posix()}"
+            legacy_path_map[old_rel] = cand_rel
+            legacy_path_map[old_rel.removesuffix(".md")] = cand_rel.removesuffix(".md")
+            if dec_src.stem != Path(cand_rel).stem:
+                legacy_path_map[dec_src.stem] = Path(cand_rel).stem
+            decision_plan.append((dec_src, cand_rel, did, dict(fm, status=status_val), body))
 
     # 7. Migrate events (`memory/events/**`)
     if (source / "memory/events").is_dir():
@@ -199,40 +285,38 @@ def migrate_v4_to_v5(
                 "recorded_by": str(fm.get("recorded_by") or "agent-owner-00000001"),
                 "summary": str(fm.get("summary") or ev_src.stem),
                 "entities": list(fm.get("entities") or []),
-                "sources": [_rewrite_legacy_path(str(s)) for s in (fm.get("sources") or [])],
+                "sources": [_rewrite_legacy_path(str(s), legacy_path_map) for s in (fm.get("sources") or [])],
             }
             if fm.get("asserts"):
                 ev_fm["asserts"] = fm["asserts"]
             if fm.get("tags"):
                 ev_fm["tags"] = list(fm["tags"])
-            write_markdown(target / "knowledge/events" / rel_sub, ev_fm, _rewrite_body_wikilinks(body))
+            write_markdown(target / "knowledge/events" / rel_sub, ev_fm, _rewrite_body_wikilinks(body, legacy_path_map))
             counts["events"] += 1
 
-    # 8. Migrate decisions (`memory/decisions/**`)
-    if (source / "memory/decisions").is_dir():
-        for dec_src in sorted((source / "memory/decisions").rglob("*.md")):
-            fm, body = split_frontmatter(dec_src)
-            if fm.get("type") != "decision":
-                continue
-            did = str(fm.get("id") or dec_src.stem)
-            evidence = [_rewrite_legacy_path(str(x)) for x in [*(fm.get("derived_from") or []), *(fm.get("sources") or [])]]
-            dec_fm: dict[str, Any] = {
-                "type": "decision",
-                "id": did,
-                "title": str(fm.get("title") or did),
-                "status": str(fm.get("status") or "accepted"),
-                "decided_at": str(fm.get("decided_at") or ref_today),
-                "decided_by": "agent-owner-00000001",
-                "domain": str(fm.get("domain") or "general"),
-                "summary": str(fm.get("summary") or fm.get("title") or did),
-                "entities": list(fm.get("entities") or []),
-                "derived_from": sorted(set(evidence)),
-                "consequences": list(fm.get("consequences") or []),
-                "supersedes": _rewrite_legacy_path(str(fm["supersedes"])) if fm.get("supersedes") else None,
-                "pinned": bool(fm.get("pinned", True)),
-            }
-            write_markdown(target / "knowledge/decisions" / dec_src.name, dec_fm, _rewrite_body_wikilinks(body))
-            counts["decisions"] += 1
+    # 8. Migrate decisions (`memory/decisions/**`) -> canonical `knowledge/decisions/{id}.md`
+    for dec_src, cand_rel, did, fm, body in decision_plan:
+        evidence = [
+            _rewrite_legacy_path(str(x), legacy_path_map)
+            for x in [*(fm.get("derived_from") or []), *(fm.get("sources") or [])]
+        ]
+        dec_fm: dict[str, Any] = {
+            "type": "decision",
+            "id": did,
+            "title": str(fm.get("title") or did),
+            "status": str(fm["status"]),
+            "decided_at": str(fm.get("decided_at") or ref_today),
+            "decided_by": "agent-owner-00000001",
+            "domain": str(fm.get("domain") or "general"),
+            "summary": str(fm.get("summary") or fm.get("title") or did),
+            "entities": list(fm.get("entities") or []),
+            "derived_from": sorted(set(evidence)),
+            "consequences": list(fm.get("consequences") or []),
+            "supersedes": _rewrite_legacy_path(str(fm["supersedes"]), legacy_path_map) if fm.get("supersedes") else None,
+            "pinned": bool(fm.get("pinned", True)) if fm["status"] == "accepted" else False,
+        }
+        write_markdown(target / cand_rel, dec_fm, _rewrite_body_wikilinks(body, legacy_path_map))
+        counts["decisions"] += 1
 
     # 9. Migrate facts & temporal history (`memory/facts/**`)
     if (source / "memory/facts").is_dir():
@@ -271,7 +355,7 @@ def migrate_v4_to_v5(
             else:
                 num_conf = None
 
-            derived = [_rewrite_legacy_path(str(x)) for x in [*(fm.get("derived_from") or []), *(fm.get("sources") or [])]]
+            derived = [_rewrite_legacy_path(str(x), legacy_path_map) for x in [*(fm.get("derived_from") or []), *(fm.get("sources") or [])]]
             derived_clean = sorted(set(derived))
             last_conf = str(fm.get("last_confirmed") or fm.get("last_reviewed") or obs_iso[:10])
             decay_raw = fm.get("decay")
@@ -292,7 +376,7 @@ def migrate_v4_to_v5(
                 "assertion": str(fm.get("assertion") or "stated"),
                 "trust": str(fm.get("trust") or "owner"),
                 "derived_from": derived_clean,
-                "supersedes": _rewrite_legacy_path(str(fm["supersedes"])) if fm.get("supersedes") else None,
+                "supersedes": _rewrite_legacy_path(str(fm["supersedes"]), legacy_path_map) if fm.get("supersedes") else None,
                 "pinned": pinned,
                 "last_confirmed": last_conf,
                 "review_after": str(fm["review_after"]) if fm.get("review_after") else None,
@@ -301,7 +385,7 @@ def migrate_v4_to_v5(
                 fact_fm["retracted_at"] = _parse_legacy_dt(fm.get("retracted_at"), now_iso)
                 fact_fm["retraction_reason"] = str(fm.get("reason") or "Migrated retracted fact")
 
-            write_markdown(target / "knowledge/facts" / rel_sub, fact_fm, _rewrite_body_wikilinks(body))
+            write_markdown(target / "knowledge/facts" / rel_sub, fact_fm, _rewrite_body_wikilinks(body, legacy_path_map))
             counts["facts"] += 1
 
     # 10. Migrate human prose folders (`people`, `projects`, `context`, `insights`) -> `knowledge/notes/`
@@ -336,7 +420,7 @@ def migrate_v4_to_v5(
                 "entities": ents,
                 "authoritative": False,
             }
-            write_markdown(target / dst_rel, note_fm, _rewrite_body_wikilinks(body))
+            write_markdown(target / dst_rel, note_fm, _rewrite_body_wikilinks(body, legacy_path_map))
             counts["notes"] += 1
             if note_kind in {"insight", "context"}:
                 migrated_insight_notes.append(dst_rel.as_posix())

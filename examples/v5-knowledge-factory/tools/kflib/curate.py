@@ -9,7 +9,7 @@ from typing import Any
 from .capture import capture_signal
 from .model import (
     format_markdown,
-    is_current_record,
+    is_active_head,
     iso_utc,
     parse_date,
     parse_datetime,
@@ -89,7 +89,7 @@ def scan_vault_drift(
         r = rel_path(p, root)
         slot = (str(fm.get("entity")), str(fm.get("predicate")))
         all_fact_values_by_slot.setdefault(slot, set()).add(repr(fm.get("value")))
-        if is_current_record(fm):
+        if is_active_head(fm):
             active_facts_by_slot[slot] = (r, fm)
         end_d = parse_date(fm.get("valid_until"))
         if end_d and end_d <= ref and r == f"knowledge/facts/{slot[0]}/{slot[1]}.md" and fm.get("status") == "active":

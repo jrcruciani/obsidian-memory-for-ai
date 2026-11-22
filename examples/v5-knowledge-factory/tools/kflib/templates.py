@@ -296,6 +296,8 @@ SCHEMAS: dict[str, dict[str, Any]] = {
             "consequences": {"kind": "list"},
             "supersedes": {"kind": "str", "nullable": True},
             "pinned": {"kind": "bool"},
+            "retracted_at": {"kind": "datetime", "nullable": True},
+            "retraction_reason": {"kind": "str", "nullable": True},
         },
     },
     "signal.schema.yaml": {

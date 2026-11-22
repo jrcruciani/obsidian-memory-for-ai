@@ -175,7 +175,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_prop = sub.add_parser("propose", help="Create/list/show executable curation proposals")
     prop_sub = p_prop.add_subparsers(dest="prop_cmd", required=True)
     p_pc = prop_sub.add_parser("create")
-    p_pc.add_argument("--title", required=True)
+    p_pc.add_argument("--title", dest="proposal_title", required=True)
     p_pc.add_argument("--namespace", required=True, choices=NAMESPACES)
     p_pc.add_argument("--proposer", required=True)
     p_pc.add_argument("--rationale", default=None)
@@ -414,7 +414,7 @@ def dispatch(args: argparse.Namespace, root: Path, out: io.StringIO) -> tuple[in
             ops = load_ops_from_cli(args)
             prop = create_proposal(
                 root,
-                title=args.title,
+                title=args.proposal_title,
                 namespace=args.namespace,
                 proposer_id=args.proposer,
                 ops=ops,

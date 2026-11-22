@@ -103,6 +103,76 @@ class V5MigrationTests(unittest.TestCase):
         lint = self.run_kf("lint", "--strict")
         self.assertEqual(lint.returncode, 0, lint.stdout + lint.stderr)
 
+    def test_migrates_standalone_entity_files_and_canonical_decision_id_paths(self) -> None:
+        # 1. Add standalone entity files under memory/entities/*.md (not present in memory/entities.md)
+        ent_dir = self.src / "memory/entities"
+        ent_dir.mkdir(parents=True, exist_ok=True)
+        (ent_dir / "raman-probe.md").write_text(
+            "---\n"
+            "type: entity\n"
+            "id: raman-probe\n"
+            "kind: tool\n"
+            "display: Portable Raman Probe\n"
+            "aliases: [Raman Probe, Raman-785]\n"
+            "---\n\n# Portable Raman Probe\n",
+            encoding="utf-8",
+        )
+        # Also augment an existing entity from memory/entities/*.md
+        (ent_dir / "concordance.md").write_text(
+            "---\n"
+            "type: entity\n"
+            "id: concordance\n"
+            "kind: project\n"
+            "display: Concordance\n"
+            "aliases: [Concordance Atlas]\n"
+            "---\n",
+            encoding="utf-8",
+        )
+        # Reference the new standalone entity and the legacy decision filename from a fact
+        raman_fact = self.src / "memory/facts/raman-probe/role.md"
+        raman_fact.parent.mkdir(parents=True, exist_ok=True)
+        raman_fact.write_text(
+            "---\n"
+            "type: fact\n"
+            "id: fact-concordance-raman-tool\n"
+            "entity: raman-probe\n"
+            "predicate: role\n"
+            "value: Supplemental spectroscopy unit\n"
+            "recorded_at: '2026-08-10T10:00:00Z'\n"
+            "confidence: 0.9\n"
+            "derived_from:\n"
+            "  - memory/decisions/DEC-001-v4-transaction-model.md\n"
+            "---\n\nSee [[DEC-001-v4-transaction-model]] for governance context.\n",
+            encoding="utf-8",
+        )
+
+        self.run_kf(
+            "migrate",
+            "--source", str(self.src),
+            "--target", str(self.dst),
+            "--yes",
+            cwd=REPO_ROOT,
+            check=True,
+        )
+
+        # Standalone entity from memory/entities/raman-probe.md must be migrated & resolvable
+        resolved_raman = self.run_kf("query", "resolve", "Raman-785", check=True).stdout.strip()
+        self.assertEqual(resolved_raman, "raman-probe")
+        resolved_conc = self.run_kf("query", "resolve", "Concordance Atlas", check=True).stdout.strip()
+        self.assertEqual(resolved_conc, "concordance")
+
+        # Decision DEC-001 (from DEC-001-v4-transaction-model.md) MUST be written at canonical {id}.md
+        self.assertTrue((self.dst / "knowledge/decisions/DEC-001.md").is_file())
+        self.assertFalse((self.dst / "knowledge/decisions/DEC-001-v4-transaction-model.md").exists())
+
+        # query why decision DEC-001 works because canonical path matches {id}.md!
+        why_dec = self.run_kf("query", "why", "decision", "DEC-001", check=True).stdout
+        self.assertIn("knowledge/decisions/DEC-001.md", why_dec)
+
+        # Migrated vault passes strict lint (including rewritten derived_from and wikilinks)
+        lint = self.run_kf("lint", "--strict")
+        self.assertEqual(lint.returncode, 0, lint.stdout + lint.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()

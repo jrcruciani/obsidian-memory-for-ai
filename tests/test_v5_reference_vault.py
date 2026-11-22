@@ -88,6 +88,30 @@ class V5ReferenceVaultTests(unittest.TestCase):
         self.assertEqual(res.returncode, 0, res.stdout + res.stderr)
         self.assertIn("passed.", res.stdout)
 
+    def test_docs_and_optional_guides_contain_no_broken_relative_links(self) -> None:
+        import re
+
+        link_re = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
+        doc_files = [
+            REPO_ROOT / "README.md",
+            REPO_ROOT / "SPEC-v5.0.md",
+            *[p for p in sorted((REPO_ROOT / "docs").rglob("*.md")) if "archive" not in p.parts],
+        ]
+        broken: list[str] = []
+        for md in doc_files:
+            clean = re.sub(r"```.*?```", "", md.read_text(encoding="utf-8"), flags=re.DOTALL)
+            for m in link_re.finditer(clean):
+                target = m.group(2).strip()
+                if target.startswith(("http://", "https://", "mailto:", "#")):
+                    continue
+                path_part = target.split("#", 1)[0]
+                if not path_part:
+                    continue
+                resolved = (md.parent / path_part).resolve()
+                if not resolved.exists():
+                    broken.append(f"{md.relative_to(REPO_ROOT)}: {target}")
+        self.assertEqual(broken, [], f"broken relative Markdown links: {broken}")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -43,3 +43,9 @@ fields:
     nullable: true
   pinned:
     kind: bool
+  retracted_at:
+    kind: datetime
+    nullable: true
+  retraction_reason:
+    kind: str
+    nullable: true
