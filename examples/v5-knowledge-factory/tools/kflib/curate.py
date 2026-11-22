@@ -16,12 +16,13 @@ from .model import (
     rel_path,
     safe_path,
     scan_records,
+    slugify,
     split_frontmatter,
     today,
     utc_now,
 )
 from .schema_check import compute_stale_records
-from .transact import execute_atomic_publication, get_agent_roles
+from .transact import enforce_no_pending_recovery, execute_atomic_publication, get_agent_roles
 
 
 def _enforce_curator_or_owner(root: Path, agent_id: str) -> None:
@@ -88,7 +89,8 @@ def scan_vault_drift(
     for p, fm, _ in scan_records(root, "knowledge/facts", "fact"):
         r = rel_path(p, root)
         slot = (str(fm.get("entity")), str(fm.get("predicate")))
-        all_fact_values_by_slot.setdefault(slot, set()).add(repr(fm.get("value")))
+        if fm.get("status") != "retracted":
+            all_fact_values_by_slot.setdefault(slot, set()).add(repr(fm.get("value")))
         if is_active_head(fm):
             active_facts_by_slot[slot] = (r, fm)
         end_d = parse_date(fm.get("valid_until"))
@@ -180,6 +182,35 @@ def scan_vault_drift(
     return {"detections": detections, "emitted_signals": emitted}
 
 
+def _verify_dismissed_signal_state(
+    root: Path,
+    signal_id: str,
+    sig_rel: str,
+    sig_fm: dict[str, Any],
+) -> str:
+    rcpt_id = sig_fm.get("resolved_by_receipt")
+    if not isinstance(rcpt_id, str) or not rcpt_id.strip():
+        raise ValueError(f"signal {signal_id} is marked dismissed but has no resolved_by_receipt")
+    rcpt_path = safe_path(root, f"factory/receipts/{rcpt_id}.md")
+    if not rcpt_path.is_file():
+        raise ValueError(f"signal {signal_id} is marked dismissed, but receipt {rcpt_id} does not exist")
+    rcpt_fm, _ = split_frontmatter(rcpt_path)
+    if (
+        rcpt_fm.get("type") != "receipt"
+        or rcpt_fm.get("status") != "committed"
+        or rcpt_fm.get("mode") != "signal_triage"
+        or signal_id not in (rcpt_fm.get("resolved_signals") or [])
+    ):
+        raise ValueError(f"signal {signal_id} receipt {rcpt_id} is invalid or not committed for this signal")
+    touched = rcpt_fm.get("touched_files")
+    if not isinstance(touched, list) or not any(
+        isinstance(entry, dict) and entry.get("path") == sig_rel
+        for entry in touched
+    ):
+        raise ValueError(f"signal {signal_id} receipt {rcpt_id} did not record touching {sig_rel}")
+    return rcpt_id
+
+
 def dismiss_signal(
     root: Path,
     *,
@@ -191,6 +222,7 @@ def dismiss_signal(
 ) -> dict[str, Any]:
     if not yes:
         raise ValueError("dismiss-signal requires --yes confirmation")
+    enforce_no_pending_recovery(root, block_all_staged=True)
     _enforce_curator_or_owner(root, curator_id)
     clean_reason = reason.strip()
     if not clean_reason:
@@ -207,24 +239,38 @@ def dismiss_signal(
         raise ValueError(f"signal not found: {signal_id}")
 
     rel = rel_path(found_path, root)
-    if found_fm.get("status") == "dismissed":
-        return dict(found_fm, path=rel, idempotent_replay=True)
+    cur_status = found_fm.get("status")
+    if cur_status == "dismissed":
+        verified_rcpt_id = _verify_dismissed_signal_state(root, signal_id, rel, found_fm)
+        return dict(found_fm, path=rel, receipt_id=verified_rcpt_id, idempotent_replay=True)
+    if cur_status == "resolved":
+        raise ValueError(f"cannot dismiss signal {signal_id}: signal is already resolved")
+    if cur_status not in {"open", "proposed"}:
+        raise ValueError(f"cannot dismiss signal {signal_id} in status {cur_status!r}")
 
-    now_iso = iso_utc(utc_now())
+    now = utc_now()
+    now_iso = iso_utc(now)
+    stamp = now.strftime("%Y%m%dt%H%M%Sz")
+    ikey = f"dismiss-{signal_id}"
+    suffix = hashlib.sha256(f"{ikey}:{now_iso}".encode("utf-8")).hexdigest()[:8]
+    planned_rcpt_id = f"rcpt-{slugify(ikey, 20)}-{stamp}-{suffix}"
     updated_fm = dict(
         found_fm,
         status="dismissed",
+        proposal_id=None,
         resolved_at=now_iso,
+        resolved_by_receipt=planned_rcpt_id,
         resolution_note=clean_reason,
     )
     pub = execute_atomic_publication(
         root,
         mode="signal_triage",
-        idempotency_key=f"dismiss-{signal_id}",
+        idempotency_key=ikey,
         actor_id=curator_id,
         ops=[{"op": "dismiss_signal", "signal_id": signal_id, "reason": clean_reason}],
         writes={rel: format_markdown(updated_fm, found_body)},
         resolved_signals=[signal_id],
+        receipt_id=planned_rcpt_id,
         rebuild=rebuild,
     )
-    return dict(updated_fm, path=rel, receipt_id=pub["receipt_id"])
+    return dict(updated_fm, path=rel, receipt_id=pub["receipt_id"], idempotent_replay=False)

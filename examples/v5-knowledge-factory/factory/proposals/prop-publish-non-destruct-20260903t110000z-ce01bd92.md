@@ -48,7 +48,7 @@ receipt_id: rcpt-publish-prop-publish-20260903t151000z-51b8ff2b
 
 # Proposal: Publish Non-Destructive XRF Pigment Scan skill
 
-- **Status:** `proposed`
+- **Status:** `published`
 - **Namespace:** `skills`
 - **Proposer:** `agent-curator-00000003`
 - **Content hash:** `sha256:d4ed58763fb3b6ab7aa8a5fd460b3870f351ccf9b0b8f5ce628ea13b1726a94a`

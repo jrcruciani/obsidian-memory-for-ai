@@ -63,13 +63,13 @@ KF_TODAY=2026-10-15 python3 tools/kf.py bootstrap --profile executor
 KF_TODAY=2026-10-15 python3 tools/kf.py bootstrap --profile curator
 
 # 3. Query living facts (current, historical --as-of, skills, guidance, and full Factory lineage)
-python3 tools/kf.py query facts --entity elena-voss
-python3 tools/kf.py query facts --entity elena-voss --predicate role --as-of 2026-07-01
-python3 tools/kf.py query skills --trigger "xrf"
-python3 tools/kf.py query guidance --scope executor
-python3 tools/kf.py query why skill xrf-pigment-scan
-python3 tools/kf.py query search "Voss"
-python3 tools/kf.py query graph concordance
+KF_TODAY=2026-10-15 python3 tools/kf.py query facts --entity elena-voss
+KF_TODAY=2026-10-15 python3 tools/kf.py query facts --entity elena-voss --predicate role --as-of 2026-07-01
+KF_TODAY=2026-10-15 python3 tools/kf.py query skills --trigger "xrf"
+KF_TODAY=2026-10-15 python3 tools/kf.py query guidance --scope executor
+KF_TODAY=2026-10-15 python3 tools/kf.py query why skill xrf-pigment-scan
+KF_TODAY=2026-10-15 python3 tools/kf.py query search "Voss"
+KF_TODAY=2026-10-15 python3 tools/kf.py query graph concordance
 
 # 4. Initialize a brand-new vault anywhere
 python3 tools/kf.py init ~/MyKnowledgeFactory

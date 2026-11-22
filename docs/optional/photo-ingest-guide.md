@@ -2,7 +2,7 @@
 
 **Use multimodal AI to analyze your photography sessions — selecting the best shots, suggesting edits, and improving your composition.**
 
-> This is an extension of the [Obsidian Memory for AI](../../README.md) system. It builds on the existing `sources/` layer and the Ingest operation to add a specialized workflow for photographs.
+> **Optional non-protocol guide (v5.0 framing):** This workflow is an optional multimodal extension outside [`SPEC-v5.0.md`](../../SPEC-v5.0.md) for curating photography sessions under [`sources/`](../../SPEC-v5.0.md) (`sources/photos/...`) in an [Obsidian Memory for AI](../../README.md) vault. In Knowledge Factory v5.0, any reusable trigger workflow can be packaged as a governed `skill` (`knowledge/skills/{slug}.md`) rather than legacy `triggers.md` / `schema.md` files, while generated `analysis.md` reports remain immutable evidence in `sources/`.
 
 ---
 

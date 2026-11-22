@@ -752,6 +752,213 @@ class V5FactoryPipelineTests(unittest.TestCase):
             self.assertEqual(list((self.vault / "factory/proposals").glob("*.md")), [])
             self.assertEqual(sig_file.read_text(encoding="utf-8"), sig_before)
 
+    def test_pending_recovery_closed_signal_protections_dismiss_receipt_replay_and_proposal_body_status(self) -> None:
+        # 1. Capture two open signals
+        sig_a = json.loads(
+            self.run_kf(
+                "capture", "signal",
+                "--emitted-by", "agent-executor-00000004",
+                "--kind", "gap",
+                "--severity", "medium",
+                "--target-namespace", "facts",
+                "--summary", "Signal A to resolve via proposal",
+                "--entities", "elena-voss",
+                "--json",
+                check=True,
+            ).stdout
+        )["data"]
+        sig_b = json.loads(
+            self.run_kf(
+                "capture", "signal",
+                "--emitted-by", "agent-executor-00000004",
+                "--kind", "observation",
+                "--severity", "low",
+                "--target-namespace", "facts",
+                "--summary", "Signal B to dismiss via triage",
+                "--entities", "elena-voss",
+                "--json",
+                check=True,
+            ).stdout
+        )["data"]
+
+        # Create competing proposals P1 and P2 targeting sig_a, plus P3 targeting sig_b
+        p1 = json.loads(
+            self.run_kf(
+                "propose", "create",
+                "--title", "Proposal P1 for Signal A",
+                "--namespace", "facts",
+                "--proposer", "agent-curator-00000003",
+                "--resolves-signals", sig_a["id"],
+                "--op", "create_fact",
+                "--entity", "elena-voss",
+                "--predicate", "language",
+                "--value", "German",
+                "--confidence", "0.95",
+                "--assertion", "stated",
+                "--trust", "agent",
+                "--json",
+                check=True,
+            ).stdout
+        )["data"]
+        p2 = json.loads(
+            self.run_kf(
+                "propose", "create",
+                "--title", "Competing Proposal P2 for Signal A",
+                "--namespace", "facts",
+                "--proposer", "agent-curator-00000003",
+                "--resolves-signals", sig_a["id"],
+                "--op", "create_fact",
+                "--entity", "elena-voss",
+                "--predicate", "role",
+                "--value", "Senior Conservator",
+                "--confidence", "0.9",
+                "--assertion", "stated",
+                "--trust", "agent",
+                "--json",
+                check=True,
+            ).stdout
+        )["data"]
+        p3 = json.loads(
+            self.run_kf(
+                "propose", "create",
+                "--title", "Proposal P3 for Signal B",
+                "--namespace", "facts",
+                "--proposer", "agent-curator-00000003",
+                "--resolves-signals", sig_b["id"],
+                "--op", "create_fact",
+                "--entity", "elena-voss",
+                "--predicate", "employer",
+                "--value", "Gemaldegalerie",
+                "--confidence", "0.9",
+                "--assertion", "stated",
+                "--trust", "agent",
+                "--json",
+                check=True,
+            ).stdout
+        )["data"]
+
+        # 2. Simulate pending recovery in factory/_staging -> create_proposal, submit_review, dismiss_signal, capture MUST all refuse!
+        crashed_dir = self.vault / "factory/_staging/txn-crashed-0001"
+        (crashed_dir / "preimages").mkdir(parents=True, exist_ok=True)
+        (crashed_dir / "preimages/manifest.json").write_text("{}", encoding="utf-8")
+
+        self.assertNotEqual(
+            self.run_kf(
+                "propose", "create", "--title", "Blocked prop", "--namespace", "facts",
+                "--proposer", "agent-curator-00000003", "--op", "confirm_fact", "--entity", "elena-voss", "--predicate", "base",
+            ).returncode,
+            0,
+        )
+        self.assertNotEqual(
+            self.run_kf("review", "approve", "--proposal-id", p1["id"], "--reviewer", "agent-reviewer-00000002").returncode,
+            0,
+        )
+        self.assertNotEqual(
+            self.run_kf(
+                "curate", "dismiss-signal", "--signal-id", sig_b["id"],
+                "--curator", "agent-curator-00000003", "--reason", "Blocked by recovery", "--yes",
+            ).returncode,
+            0,
+        )
+        self.assertNotEqual(
+            self.run_kf(
+                "capture", "signal", "--emitted-by", "agent-executor-00000004",
+                "--kind", "gap", "--summary", "Blocked capture",
+            ).returncode,
+            0,
+        )
+
+        # Clean up crashed staging via recover
+        self.run_kf("transact", "recover", "--yes", check=True)
+
+        # 3. Verify proposal body `- **Status:**` stays synchronized across request-changes -> approve -> publish
+        self.run_kf(
+            "review", "request-changes", "--proposal-id", p1["id"],
+            "--reviewer", "agent-reviewer-00000002", "--comment", "Check wording", check=True,
+        )
+        self.assertIn("- **Status:** `changes_requested`", (self.vault / p1["path"]).read_text(encoding="utf-8"))
+
+        self.run_kf(
+            "review", "approve", "--proposal-id", p1["id"],
+            "--reviewer", "agent-reviewer-00000002", "--comment", "Approved now", check=True,
+        )
+        self.assertIn("- **Status:** `approved`", (self.vault / p1["path"]).read_text(encoding="utf-8"))
+
+        self.run_kf("publish", "--proposal-id", p1["id"], "--publisher", "agent-reviewer-00000002", "--yes", check=True)
+        self.assertIn("- **Status:** `published`", (self.vault / p1["path"]).read_text(encoding="utf-8"))
+
+        # 4. sig_a is now 'resolved': dismiss_signal, create_proposal, submit_review (on P2), and publish MUST all reject sig_a!
+        self.assertNotEqual(
+            self.run_kf(
+                "curate", "dismiss-signal", "--signal-id", sig_a["id"],
+                "--curator", "agent-curator-00000003", "--reason", "Cannot dismiss resolved", "--yes",
+            ).returncode,
+            0,
+        )
+        self.assertNotEqual(
+            self.run_kf(
+                "propose", "create", "--title", "Re-propose resolved sig_a", "--namespace", "facts",
+                "--proposer", "agent-curator-00000003", "--resolves-signals", sig_a["id"],
+                "--op", "confirm_fact", "--entity", "elena-voss", "--predicate", "base",
+            ).returncode,
+            0,
+        )
+        rev_p2 = self.run_kf("review", "approve", "--proposal-id", p2["id"], "--reviewer", "agent-reviewer-00000002")
+        self.assertNotEqual(rev_p2.returncode, 0)
+        self.assertIn("resolved", (rev_p2.stdout + rev_p2.stderr).lower())
+
+        # 5. Dismiss sig_b legitimately -> verify receipt binding, idempotent replay WITH receipt, and refusal WITHOUT receipt
+        dism_ok = json.loads(
+            self.run_kf(
+                "curate", "dismiss-signal", "--signal-id", sig_b["id"],
+                "--curator", "agent-curator-00000003", "--reason", "Out of scope observation", "--yes", "--json",
+                check=True,
+            ).stdout
+        )["data"]
+        self.assertEqual(dism_ok["status"], "dismissed")
+        self.assertTrue(dism_ok["receipt_id"].startswith("rcpt-"))
+        rcpt_b_file = self.vault / "factory/receipts" / f"{dism_ok['receipt_id']}.md"
+        self.assertTrue(rcpt_b_file.is_file())
+
+        # Valid idempotent replay returns same receipt_id
+        dism_replay = json.loads(
+            self.run_kf(
+                "curate", "dismiss-signal", "--signal-id", sig_b["id"],
+                "--curator", "agent-curator-00000003", "--reason", "Out of scope observation", "--yes", "--json",
+                check=True,
+            ).stdout
+        )["data"]
+        self.assertTrue(dism_replay["idempotent_replay"])
+        self.assertEqual(dism_replay["receipt_id"], dism_ok["receipt_id"])
+
+        # Delete receipt -> dismiss-signal replay AND lint MUST refuse!
+        saved_rcpt_b = rcpt_b_file.read_bytes()
+        rcpt_b_file.unlink()
+        false_dism_replay = self.run_kf(
+            "curate", "dismiss-signal", "--signal-id", sig_b["id"],
+            "--curator", "agent-curator-00000003", "--reason", "Replay without receipt", "--yes",
+        )
+        self.assertNotEqual(false_dism_replay.returncode, 0)
+        self.assertIn("receipt", (false_dism_replay.stdout + false_dism_replay.stderr).lower())
+        self.assertNotEqual(self.run_kf("lint").returncode, 0)
+        rcpt_b_file.write_bytes(saved_rcpt_b)
+
+        # sig_b is 'dismissed': create_proposal and submit_review (on P3) MUST reject sig_b!
+        self.assertNotEqual(
+            self.run_kf(
+                "propose", "create", "--title", "Propose on dismissed sig_b", "--namespace", "facts",
+                "--proposer", "agent-curator-00000003", "--resolves-signals", sig_b["id"],
+                "--op", "confirm_fact", "--entity", "elena-voss", "--predicate", "base",
+            ).returncode,
+            0,
+        )
+        rev_p3 = self.run_kf("review", "approve", "--proposal-id", p3["id"], "--reviewer", "agent-reviewer-00000002")
+        self.assertNotEqual(rev_p3.returncode, 0)
+        self.assertIn("dismissed", (rev_p3.stdout + rev_p3.stderr).lower())
+
+        self.run_kf("rebuild", check=True)
+        self.assertEqual(self.run_kf("lint", "--strict").returncode, 0)
+
 
 if __name__ == "__main__":
     unittest.main()

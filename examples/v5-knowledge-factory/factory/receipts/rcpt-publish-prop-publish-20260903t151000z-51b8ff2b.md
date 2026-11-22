@@ -48,7 +48,7 @@ touched_files:
   - path: factory/proposals/prop-publish-non-destruct-20260903t110000z-ce01bd92.md
     action: updated
     before_hash: "sha256:5d40a861abcf361d16d14271ff5c02775fef730ba1155d39a3483ae24b8ab717"
-    after_hash: "sha256:bd96dfe9b385d3e9e2bc53aeccc9902710099c1230355ceb6f1fbba35979d0cb"
+    after_hash: "sha256:8f0216b9e715bb162b9fb44d56a819caebba8144edc687898da409a4e8d226ed"
   - path: factory/signals/2026-09-02/sig-missing-standardized-20260902t093000z-e3d79bbc.md
     action: updated
     before_hash: "sha256:f2f739457445b22204ac294317658f2e9e77b8c98dc44ea87caf7909b27188d5"

@@ -377,6 +377,8 @@ def query_search(
     diags = _warn_if_index_stale(root, "_generated/indexes/lexical.md")
     allowed_types = types or {"fact", "skill", "guidance", "decision"}
     needle = fold_text(term)
+    if not needle:
+        return f"No records found matching {term!r}\n", [], diags
     resolved_entities = set(resolve_entity(root, term))
     entities_map = load_entities(root)
 
@@ -408,7 +410,7 @@ def query_search(
             r = rel_path(p, root)
             sk_ents = set(fm.get("entities") or [])
             fm_text = f"{fm.get('slug')} {fm.get('title')} {fm.get('domain')} {' '.join(str(t) for t in (fm.get('triggers') or []))}"
-            rank = 0 if (sk_ents & resolved_entities) else (1 if needle in fold_text(fm_text) else (2 if needle in fold_text(body) else None))
+            rank = 0 if (sk_ents & resolved_entities) else (1 if (needle and needle in fold_text(fm_text)) else (2 if (needle and needle in fold_text(body)) else None))
             if rank is not None:
                 line = f"[skill] {fm['slug']} — {fm['title']}  [{r}]"
                 scored.append((rank, r, {"type": "skill", "path": r, "slug": fm["slug"], "title": fm["title"]}, line))
@@ -420,7 +422,7 @@ def query_search(
             r = rel_path(p, root)
             gd_ents = set(fm.get("entities") or [])
             fm_text = f"{fm.get('slug')} {fm.get('title')} {fm.get('domain')} {fm.get('policy_rule')}"
-            rank = 0 if (gd_ents & resolved_entities) else (1 if needle in fold_text(fm_text) else (2 if needle in fold_text(body) else None))
+            rank = 0 if (gd_ents & resolved_entities) else (1 if (needle and needle in fold_text(fm_text)) else (2 if (needle and needle in fold_text(body)) else None))
             if rank is not None:
                 line = f"[guidance] {fm['slug']} — {fm['policy_rule']}  [{r}]"
                 scored.append((rank, r, {"type": "guidance", "path": r, "slug": fm["slug"], "title": fm["title"]}, line))
@@ -432,7 +434,7 @@ def query_search(
             r = rel_path(p, root)
             dc_ents = set(fm.get("entities") or [])
             fm_text = f"{fm.get('id')} {fm.get('title')} {fm.get('domain')} {fm.get('summary')}"
-            rank = 0 if (dc_ents & resolved_entities) else (1 if needle in fold_text(fm_text) else (2 if needle in fold_text(body) else None))
+            rank = 0 if (dc_ents & resolved_entities) else (1 if (needle and needle in fold_text(fm_text)) else (2 if (needle and needle in fold_text(body)) else None))
             if rank is not None:
                 line = f"[decision] {fm['id']} — {fm['title']}  [{r}]"
                 scored.append((rank, r, {"type": "decision", "path": r, "id": fm["id"], "title": fm["title"]}, line))

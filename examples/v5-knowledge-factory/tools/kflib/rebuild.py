@@ -342,7 +342,11 @@ def verify_generated_integrity(root: Path) -> list[tuple[str, str]]:
         if rel not in actual_files:
             issues.append((rel, "missing generated artifact; run `python3 tools/kf.py rebuild`"))
             continue
-        act_content = actual_files[rel].read_text(encoding="utf-8")
+        raw_bytes = actual_files[rel].read_bytes()
+        if b"\r" in raw_bytes:
+            issues.append((rel, "generated artifact contains non-LF line endings (CR/CRLF); run `python3 tools/kf.py rebuild`"))
+            continue
+        act_content = raw_bytes.decode("utf-8")
         m = GENERATED_BANNER_RE.match(act_content)
         if not m:
             issues.append((rel, "generated artifact banner missing or hand-edited"))

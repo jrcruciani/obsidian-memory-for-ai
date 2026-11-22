@@ -458,6 +458,10 @@ def init_vault(target: Path, *, force: bool = False, copy_tools_from: Path | Non
     ):
         (target / folder).mkdir(parents=True, exist_ok=True)
 
+    atomic_write_text(
+        target / ".gitattributes",
+        "*.md text eol=lf\n*.yaml text eol=lf\n*.yml text eol=lf\n*.json text eol=lf\n*.py text eol=lf\n*.txt text eol=lf\n",
+    )
     atomic_write_text(target / "AGENTS.md", AGENTS_MD)
     atomic_write_text(target / "CLAUDE.md", CLAUDE_MD)
     atomic_write_text(target / "requirements.txt", "PyYAML>=6.0\n")

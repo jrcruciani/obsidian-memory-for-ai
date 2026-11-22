@@ -1,14 +1,14 @@
 # Optional Ideas
 
-> Extras you can add to your memory system. None of these are required — think of them as house rules for a board game. Pick what fits your workflow, ignore the rest.
+> **Optional non-protocol ideas (v5.0 framing):** Extras you can add around a personal Obsidian vault. None of these are part of [`SPEC-v5.0.md`](../../SPEC-v5.0.md) — think of them as optional house rules outside the core Knowledge Factory protocol. Illustrative paths from earlier personal setups (`memory/...`, `TASKS.md`) should live outside governed `knowledge/` truth (for example under `knowledge/notes/` or personal folders), while canonical facts, skills, guidance, and decisions continue to flow through `tools/kf.py`.
 
 ---
 
 ## Sidecar semantic index (deliberately outside the protocol)
 
 A private experiment could build a disposable semantic index alongside a
-vault. It must never become canonical or alter the protocol's offline,
-Python/PyYAML-only tools. v4.1 deliberately excludes embeddings, vector stores,
+vault. It must never become canonical or alter the protocol's offline
+Python 3 tools (`tools/kf.py` with optional `PyYAML` and stdlib fallback). v5.0 deliberately excludes embeddings, vector stores,
 and a running retrieval service: at this small, owner-controlled scale, start
 with a capable agent iterating over lexical queries and inspectable files.
 

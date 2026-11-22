@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -35,6 +36,13 @@ from .transact import (
     get_agent_roles,
     validate_candidate_writes,
 )
+
+
+_PROP_BODY_STATUS_RE = re.compile(r"^(- \*\*Status:\*\* `)[^`\n]+(`)", re.MULTILINE)
+
+
+def _sync_proposal_body_status(body: str, new_status: str) -> str:
+    return _PROP_BODY_STATUS_RE.sub(rf"\g<1>{new_status}\2", body, count=1)
 
 
 def compute_proposal_hash(data: dict[str, Any]) -> str:
@@ -115,7 +123,7 @@ def create_proposal(
 ) -> dict[str, Any]:
     if status not in {"draft", "proposed"}:
         raise ValueError("initial proposal status must be 'draft' or 'proposed'")
-    enforce_no_pending_recovery(root)
+    enforce_no_pending_recovery(root, block_all_staged=True)
     req_approvals = _enforce_proposer_allowed(root, namespace, proposer_id)
 
     if not isinstance(ops, list) or len(ops) == 0:
@@ -124,6 +132,10 @@ def create_proposal(
     if idempotency_key:
         for p, fm, _ in scan_records(root, "factory/proposals", "proposal"):
             if fm.get("idempotency_key") == idempotency_key:
+                if fm.get("content_hash") != compute_proposal_hash(fm):
+                    raise ValueError(f"proposal {fm.get('id')} content_hash mismatch on idempotent replay")
+                if fm.get("status") == "published":
+                    _verify_published_proposal_state(root, str(fm["id"]), fm)
                 return dict(fm, path=rel_path(p, root), idempotent_replay=True)
 
     enriched_ops: list[dict[str, Any]] = []
@@ -138,21 +150,24 @@ def create_proposal(
             )
         enforce_op_trust_policy(root, op, proposer_id, reviewed=True)
         # Capture optimistic precondition_hash on existing target records
-        if op["op"] in {"supersede_fact", "confirm_fact", "retract_fact"}:
+        if op["op"] in {"create_fact", "supersede_fact", "confirm_fact", "retract_fact"}:
             slot = safe_path(root, f"knowledge/facts/{op.get('entity')}/{op.get('predicate')}.md")
-            if not slot.is_file():
+            if op["op"] != "create_fact" and not slot.is_file():
                 raise ValueError(f"target fact does not exist: {rel_path(slot, root)}")
-            op.setdefault("precondition_hash", file_sha256(slot))
-        elif op["op"] in {"supersede_skill", "retract_skill"}:
+            if slot.is_file():
+                op.setdefault("precondition_hash", file_sha256(slot))
+        elif op["op"] in {"create_skill", "supersede_skill", "retract_skill"}:
             slot = safe_path(root, f"knowledge/skills/{op.get('slug')}.md")
-            if not slot.is_file():
+            if op["op"] != "create_skill" and not slot.is_file():
                 raise ValueError(f"target skill does not exist: {rel_path(slot, root)}")
-            op.setdefault("precondition_hash", file_sha256(slot))
-        elif op["op"] in {"supersede_guidance", "retract_guidance"}:
+            if slot.is_file():
+                op.setdefault("precondition_hash", file_sha256(slot))
+        elif op["op"] in {"create_guidance", "supersede_guidance", "retract_guidance"}:
             slot = safe_path(root, f"knowledge/guidance/{op.get('slug')}.md")
-            if not slot.is_file():
+            if op["op"] != "create_guidance" and not slot.is_file():
                 raise ValueError(f"target guidance does not exist: {rel_path(slot, root)}")
-            op.setdefault("precondition_hash", file_sha256(slot))
+            if slot.is_file():
+                op.setdefault("precondition_hash", file_sha256(slot))
         elif op["op"] == "supersede_decision":
             slot = safe_path(root, f"knowledge/decisions/{op.get('decision_id') or op.get('id')}.md")
             if not slot.is_file():
@@ -172,7 +187,12 @@ def create_proposal(
     for sid in sig_ids:
         sp, sfm, sbody = _find_signal(root, sid)
         srel = rel_path(sp, root)
-        if sfm.get("status") == "open":
+        s_status = sfm.get("status")
+        if s_status in {"resolved", "dismissed"}:
+            raise ValueError(
+                f"cannot link signal {sid} to proposal: signal is already {s_status!r}"
+            )
+        if s_status == "open":
             signal_updates[srel] = format_markdown(dict(sfm, status="proposed", proposal_id=prop_id), sbody)
 
     fm: dict[str, Any] = {
@@ -294,12 +314,14 @@ def submit_review(
     verdict: str,
     comment: str | None = None,
 ) -> dict[str, Any]:
+    enforce_no_pending_recovery(root, block_all_staged=True)
     if verdict not in REVIEW_VERDICTS:
         raise ValueError(f"invalid verdict {verdict!r}; allowed: {REVIEW_VERDICTS}")
     if verdict in {"rejected", "changes_requested"} and not (comment and comment.strip()):
         raise ValueError(f"verdict {verdict!r} requires a non-empty --comment")
 
     prop_path, prop_fm, prop_body = load_proposal(root, proposal_id)
+    prop_rel = rel_path(prop_path, root)
     if prop_fm.get("status") not in {"draft", "proposed", "changes_requested", "approved"}:
         raise ValueError(f"proposal {proposal_id} cannot be reviewed in status {prop_fm.get('status')!r}")
     expected_hash = compute_proposal_hash(prop_fm)
@@ -309,6 +331,15 @@ def submit_review(
     if reviewer_id == prop_fm.get("proposer_id"):
         raise ValueError(f"self-approval not allowed: reviewer {reviewer_id!r} is the proposer")
     _enforce_reviewer_allowed(root, str(prop_fm["namespace"]), reviewer_id)
+
+    linked_signals: list[tuple[str, dict[str, Any], str]] = []
+    for sid in prop_fm.get("resolves_signals") or []:
+        sp, sfm, sbody = _find_signal(root, str(sid))
+        if sfm.get("status") in {"resolved", "dismissed"}:
+            raise ValueError(
+                f"cannot review proposal {proposal_id}: linked signal {sid} is already {sfm.get('status')!r}"
+            )
+        linked_signals.append((rel_path(sp, root), sfm, sbody))
 
     now = utc_now()
     stamp = now.strftime("%Y%m%dt%H%M%Sz")
@@ -330,9 +361,15 @@ def submit_review(
     if rev_fm["comment"]:
         rev_body += f"\n\n> {rev_fm['comment']}"
 
-    # Determine updated proposal status
-    atomic_write_text(root / rev_rel, format_markdown(rev_fm, rev_body))
-    approved, blocking = current_valid_reviews(root, prop_fm)
+    # Validate existing reviews and compute updated proposal status before writing to disk
+    prior_approved, prior_blocking = current_valid_reviews(root, prop_fm)
+    latest_by_reviewer: dict[str, dict[str, Any]] = {
+        str(r["reviewer_id"]): r for r in [*prior_approved, *prior_blocking]
+    }
+    latest_by_reviewer[reviewer_id] = rev_fm
+    approved = [r for r in latest_by_reviewer.values() if r.get("verdict") == "approved"]
+    blocking = [r for r in latest_by_reviewer.values() if r.get("verdict") in {"rejected", "changes_requested"}]
+
     req = int(prop_fm.get("required_approvals", 1))
     if any(r.get("verdict") == "rejected" for r in blocking):
         new_status = "rejected"
@@ -344,7 +381,39 @@ def submit_review(
         new_status = "proposed"
 
     updated_prop = dict(prop_fm, status=new_status)
-    atomic_write_text(prop_path, format_markdown(updated_prop, prop_body))
+    updated_body = _sync_proposal_body_status(prop_body, new_status)
+    candidate_writes: dict[str, str | None] = {
+        rev_rel: format_markdown(rev_fm, rev_body),
+        prop_rel: format_markdown(updated_prop, updated_body),
+    }
+    if new_status == "rejected" and linked_signals:
+        other_active_claimed: set[str] = set()
+        for _, other_fm, _ in scan_records(root, "factory/proposals", "proposal"):
+            if other_fm.get("id") != proposal_id and other_fm.get("status") in {"draft", "proposed", "changes_requested", "approved"}:
+                other_active_claimed.update(str(s) for s in (other_fm.get("resolves_signals") or []))
+        for srel, sfm, sbody in linked_signals:
+            if sfm.get("status") == "proposed" and str(sfm["id"]) not in other_active_claimed:
+                candidate_writes[srel] = format_markdown(dict(sfm, status="open", proposal_id=None), sbody)
+
+    validate_candidate_writes(root, candidate_writes)
+    preimages: dict[str, str | None] = {}
+    for rel in candidate_writes:
+        target = safe_path(root, rel)
+        preimages[rel] = target.read_text(encoding="utf-8") if target.is_file() else None
+    try:
+        for rel in (rev_rel, *[k for k in sorted(candidate_writes) if k not in {rev_rel, prop_rel}], prop_rel):
+            content = candidate_writes[rel]
+            assert content is not None
+            atomic_write_text(safe_path(root, rel), content)
+    except Exception:
+        for rel, before in preimages.items():
+            target = safe_path(root, rel)
+            if before is None:
+                if target.exists():
+                    target.unlink()
+            else:
+                atomic_write_text(target, before)
+        raise
     return dict(rev_fm, path=rev_rel, proposal_status=new_status)
 
 
@@ -475,10 +544,14 @@ def publish_proposal(
     planned_rcpt_id = f"rcpt-{slugify(ikey, 20)}-{stamp}-{suffix}"
 
     updated_prop = dict(prop_fm, status="published", published_at=now_iso, receipt_id=planned_rcpt_id)
-    writes[prop_rel] = format_markdown(updated_prop, prop_body)
+    writes[prop_rel] = format_markdown(updated_prop, _sync_proposal_body_status(prop_body, "published"))
 
     for sid in resolved_sig_ids:
         sp, sfm, sbody = _find_signal(root, sid)
+        if sfm.get("status") in {"resolved", "dismissed"}:
+            raise ValueError(
+                f"cannot publish proposal {proposal_id}: linked signal {sid} is already {sfm.get('status')!r}"
+            )
         srel = rel_path(sp, root)
         writes[srel] = format_markdown(
             dict(

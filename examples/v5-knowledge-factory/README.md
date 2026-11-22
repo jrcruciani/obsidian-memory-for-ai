@@ -5,14 +5,15 @@ Self-contained reference vault demonstrating **Obsidian Memory for AI v5.0: The 
 ## Quick Tour
 
 ```bash
-python3 tools/kf.py lint --strict
+export KF_TODAY=2026-10-15  # pin reference vault snapshot date
+KF_TODAY=2026-10-15 python3 tools/kf.py lint --strict
 KF_TODAY=2026-10-15 python3 tools/kf.py bootstrap --profile executor
 KF_TODAY=2026-10-15 python3 tools/kf.py bootstrap --profile curator
-python3 tools/kf.py query facts --entity elena-voss
-python3 tools/kf.py query facts --entity elena-voss --predicate role --as-of 2026-07-01
-python3 tools/kf.py query skills --trigger xrf
-python3 tools/kf.py query guidance --scope executor
-python3 tools/kf.py query why skill xrf-pigment-scan
-python3 tools/kf.py query signals --status open
-python3 tools/kf.py query proposals --status proposed
+KF_TODAY=2026-10-15 python3 tools/kf.py query facts --entity elena-voss
+KF_TODAY=2026-10-15 python3 tools/kf.py query facts --entity elena-voss --predicate role --as-of 2026-07-01
+KF_TODAY=2026-10-15 python3 tools/kf.py query skills --trigger xrf
+KF_TODAY=2026-10-15 python3 tools/kf.py query guidance --scope executor
+KF_TODAY=2026-10-15 python3 tools/kf.py query why skill xrf-pigment-scan
+KF_TODAY=2026-10-15 python3 tools/kf.py query signals --status open
+KF_TODAY=2026-10-15 python3 tools/kf.py query proposals --status proposed
 ```

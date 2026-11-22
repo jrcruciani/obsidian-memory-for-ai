@@ -371,6 +371,172 @@ class V5TransactionsAndTypesTests(unittest.TestCase):
         lint = self.run_kf("lint", "--strict")
         self.assertEqual(lint.returncode, 0, lint.stdout + lint.stderr)
 
+    def test_retracted_facts_never_resurrect_historically_replace_without_deadlock_and_forbid_confirm(self) -> None:
+        # 1. Seed entity + two active facts + active skill + active guidance
+        seed_ops = [
+            {"op": "upsert_entity", "entity_id": "elena-voss", "kind": "person", "display": "Elena Voss", "aliases": []},
+            {
+                "op": "create_fact",
+                "entity": "elena-voss",
+                "predicate": "language",
+                "value": "Erroneous French",
+                "valid_from": "2026-03-01",
+                "confidence": 0.6,
+                "assertion": "inferred",
+                "trust": "owner",
+                "derived_from": ["sources/README.md"],
+            },
+            {
+                "op": "create_fact",
+                "entity": "elena-voss",
+                "predicate": "tool",
+                "value": "Mistaken Late Tool",
+                "valid_from": "2026-10-10",
+                "confidence": 0.6,
+                "assertion": "inferred",
+                "trust": "owner",
+                "derived_from": ["sources/README.md"],
+            },
+            {
+                "op": "create_skill",
+                "slug": "bad-proc",
+                "title": "Flawed Procedure v1",
+                "domain": "conservation",
+                "triggers": ["flawed"],
+                "verification": ["step 1"],
+                "trust": "owner",
+            },
+            {
+                "op": "create_guidance",
+                "slug": "bad-rule",
+                "title": "Flawed Rule v1",
+                "domain": "conservation",
+                "scope": "executor",
+                "priority": "normal",
+                "policy_rule": "Obsolete rule.",
+                "trust": "owner",
+            },
+        ]
+        sf = Path(self._tmp.name) / "ret_seed.json"
+        sf.write_text(json.dumps(seed_ops), encoding="utf-8")
+        b0 = json.loads(self.run_kf("transact", "begin", "--idempotency-key", "ret-0", "--actor", "agent-owner-00000001", "--json", check=True).stdout)["data"]
+        self.run_kf("transact", "add", "--txn-id", b0["transaction_id"], "--ops-file", str(sf), check=True)
+        self.run_kf("transact", "commit", "--txn-id", b0["transaction_id"], "--yes", check=True)
+
+        # 2. Retract all four records
+        retract_ops = [
+            {"op": "retract_fact", "entity": "elena-voss", "predicate": "language", "reason": "False inference"},
+            {"op": "retract_fact", "entity": "elena-voss", "predicate": "tool", "reason": "Wrong date and instrument"},
+            {"op": "retract_skill", "slug": "bad-proc", "reason": "Unsafe calibration"},
+            {"op": "retract_guidance", "slug": "bad-rule", "reason": "Withdrawn policy"},
+        ]
+        rf = Path(self._tmp.name) / "ret_all.json"
+        rf.write_text(json.dumps(retract_ops), encoding="utf-8")
+        b1 = json.loads(self.run_kf("transact", "begin", "--idempotency-key", "ret-1", "--actor", "agent-owner-00000001", "--json", check=True).stdout)["data"]
+        self.run_kf("transact", "add", "--txn-id", b1["transaction_id"], "--ops-file", str(rf), check=True)
+        self.run_kf("transact", "commit", "--txn-id", b1["transaction_id"], "--yes", check=True)
+
+        # 3. Improper confirm_fact and double retract_fact on a retracted fact MUST fail (in transact and propose)
+        b_bad = json.loads(self.run_kf("transact", "begin", "--idempotency-key", "ret-bad-confirm", "--actor", "agent-owner-00000001", "--json", check=True).stdout)["data"]
+        self.run_kf("transact", "add", "--txn-id", b_bad["transaction_id"], "--op", "confirm_fact", "--entity", "elena-voss", "--predicate", "language", check=True)
+        bad_commit = self.run_kf("transact", "commit", "--txn-id", b_bad["transaction_id"], "--yes")
+        self.assertNotEqual(bad_commit.returncode, 0)
+        self.assertIn("retracted", (bad_commit.stdout + bad_commit.stderr).lower())
+        self.run_kf("transact", "rollback", "--txn-id", b_bad["transaction_id"], check=True)
+
+        bad_prop_confirm = self.run_kf(
+            "propose", "create",
+            "--title", "Confirm retracted fact",
+            "--namespace", "facts",
+            "--proposer", "agent-curator-00000003",
+            "--op", "confirm_fact",
+            "--entity", "elena-voss",
+            "--predicate", "language",
+        )
+        self.assertNotEqual(bad_prop_confirm.returncode, 0)
+
+        bad_prop_retract_again = self.run_kf(
+            "propose", "create",
+            "--title", "Retract already retracted fact",
+            "--namespace", "facts",
+            "--proposer", "agent-curator-00000003",
+            "--op", "retract_fact",
+            "--entity", "elena-voss",
+            "--predicate", "language",
+            "--reason", "Second retraction",
+        )
+        self.assertNotEqual(bad_prop_retract_again.returncode, 0)
+
+        # 4. Replace retracted facts/skill/guidance WITHOUT deadlock:
+        #    - supersede_fact on 'language' (2026-10-15) must NOT resurrect 'Erroneous French' at --as-of 2026-05-01!
+        #    - create_fact on 'tool' with earlier valid_from='2026-01-01' (< '2026-10-10') must NOT deadlock!
+        #    - create_skill and create_guidance on retracted slots archive retracted history cleanly!
+        replace_ops = [
+            {
+                "op": "supersede_fact",
+                "entity": "elena-voss",
+                "predicate": "language",
+                "value": "German",
+                "valid_from": "2026-10-15",
+                "confidence": 0.95,
+                "assertion": "stated",
+                "trust": "owner",
+            },
+            {
+                "op": "create_fact",
+                "entity": "elena-voss",
+                "predicate": "tool",
+                "value": "Bruker Tracer 5g",
+                "valid_from": "2026-01-01",
+                "confidence": 0.95,
+                "assertion": "stated",
+                "trust": "owner",
+            },
+            {
+                "op": "create_skill",
+                "slug": "bad-proc",
+                "title": "Corrected Procedure v2",
+                "domain": "conservation",
+                "triggers": ["calibrated"],
+                "verification": ["verify standard"],
+                "trust": "owner",
+            },
+            {
+                "op": "create_guidance",
+                "slug": "bad-rule",
+                "title": "Corrected Rule",
+                "domain": "conservation",
+                "scope": "executor",
+                "priority": "high",
+                "policy_rule": "Verified rule.",
+                "trust": "owner",
+            },
+        ]
+        rep_file = Path(self._tmp.name) / "ret_replace.json"
+        rep_file.write_text(json.dumps(replace_ops), encoding="utf-8")
+        b2 = json.loads(self.run_kf("transact", "begin", "--idempotency-key", "ret-2", "--actor", "agent-owner-00000001", "--json", check=True).stdout)["data"]
+        self.run_kf("transact", "add", "--txn-id", b2["transaction_id"], "--ops-file", str(rep_file), check=True)
+        self.run_kf("transact", "commit", "--txn-id", b2["transaction_id"], "--yes", "--rebuild", check=True)
+
+        # Historical query MUST NOT resurrect retracted 'Erroneous French' or 'Mistaken Late Tool'!
+        as_of_may = self.run_kf("query", "facts", "--entity", "elena-voss", "--as-of", "2026-05-01", check=True).stdout
+        self.assertNotIn("Erroneous French", as_of_may)
+        self.assertIn("Bruker Tracer 5g", as_of_may)
+
+        as_of_oct12 = self.run_kf("query", "facts", "--entity", "elena-voss", "--as-of", "2026-10-12", check=True).stdout
+        self.assertNotIn("Mistaken Late Tool", as_of_oct12)
+        self.assertIn("Bruker Tracer 5g", as_of_oct12)
+
+        # --history preserves full non-destructive audit trail with status=retracted
+        hist_lang = self.run_kf("query", "facts", "--entity", "elena-voss", "--predicate", "language", "--history", check=True).stdout
+        self.assertIn("status=retracted", hist_lang)
+        self.assertIn("status=active", hist_lang)
+        self.assertNotIn("status=superseded", hist_lang)
+
+        # Strict lint passes cleanly
+        lint = self.run_kf("lint", "--strict")
+        self.assertEqual(lint.returncode, 0, lint.stdout + lint.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()

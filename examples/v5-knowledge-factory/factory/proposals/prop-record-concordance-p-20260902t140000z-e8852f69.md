@@ -32,7 +32,7 @@ receipt_id: rcpt-publish-prop-record-20260903t100500z-ea9e37f0
 
 # Proposal: Record Concordance primary XRF instrument from vendor bulletin
 
-- **Status:** `proposed`
+- **Status:** `published`
 - **Namespace:** `facts`
 - **Proposer:** `agent-curator-00000003`
 - **Content hash:** `sha256:e69b01bf5e416b4e1d70f1445881c9db6729c8f26c4819c0bd3b4ee4f149be17`

@@ -22,7 +22,7 @@ from .model import (
     today,
     utc_now,
 )
-from .transact import get_agent_roles, validate_candidate_writes
+from .transact import enforce_no_pending_recovery, get_agent_roles, validate_candidate_writes
 from .yaml_io import load_yaml
 
 
@@ -55,6 +55,7 @@ def capture_signal(
     idempotency_key: str | None = None,
     body: str = "",
 ) -> dict[str, Any]:
+    enforce_no_pending_recovery(root)
     _enforce_can_capture(root, emitted_by)
     if kind not in SIGNAL_KINDS:
         raise ValueError(f"invalid signal kind {kind!r}; allowed: {SIGNAL_KINDS}")
@@ -119,6 +120,7 @@ def capture_event(
     tags: list[str] | None = None,
     body: str = "",
 ) -> dict[str, Any]:
+    enforce_no_pending_recovery(root)
     _enforce_can_capture(root, recorded_by)
     if not SLUG_RE.fullmatch(event_id):
         raise ValueError(f"event_id must be a valid slug, got {event_id!r}")

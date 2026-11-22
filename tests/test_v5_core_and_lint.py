@@ -532,6 +532,143 @@ class V5CoreAndLintTests(unittest.TestCase):
         if yaml_io.has_pyyaml():
             self.assertEqual(yaml_io.load_yaml(dumped, force_fallback=False), with_empty)
 
+    def test_yaml_io_adversarial_scalars_and_keys_roundtrip_identically(self) -> None:
+        import importlib
+
+        sys.path.insert(0, str(REPO_ROOT / "tools"))
+        try:
+            yaml_io = importlib.import_module("kflib.yaml_io")
+        finally:
+            sys.path.pop(0)
+
+        adversarial_strings = [
+            "@mention",
+            "@",
+            "user@example.com",
+            "`backtick",
+            "- item",
+            "-",
+            "--",
+            "---",
+            "...",
+            "1_000",
+            "-1_000",
+            "+1_000",
+            "1_000.5",
+            "1_000e2",
+            "0x10",
+            "-0x10",
+            "+0x10",
+            "0XFF",
+            "0o10",
+            "0O10",
+            "077",
+            "0b10",
+            "0B10",
+            ".inf",
+            "-.inf",
+            "+.inf",
+            ".Inf",
+            ".INF",
+            ".nan",
+            ".NaN",
+            ".NAN",
+            "YES",
+            "NO",
+            "ON",
+            "OFF",
+            "y",
+            "n",
+            "2026-10-15",
+            "2026-02-30",
+            "0000-00-00",
+            "_leading_underscore",
+            ".hidden",
+        ]
+        payload = {
+            "scalars": adversarial_strings,
+            "by_key": {s: s for s in adversarial_strings},
+            "list_of_maps": [{s: s, "extra": s} for s in adversarial_strings],
+        }
+        dumped = yaml_io.dump_yaml(payload)
+        parsed_fallback = yaml_io.load_yaml(dumped, force_fallback=True)
+        self.assertEqual(parsed_fallback, payload)
+        for v in parsed_fallback["scalars"]:
+            self.assertIsInstance(v, str)
+        if yaml_io.has_pyyaml():
+            parsed_pyyaml = yaml_io.load_yaml(dumped, force_fallback=False)
+            self.assertEqual(parsed_pyyaml, payload)
+            for v in parsed_pyyaml["scalars"]:
+                self.assertIsInstance(v, str)
+
+        # End-to-end inside a vault fact frontmatter roundtrip + strict lint
+        self.init_vault()
+        ops = [{"op": "upsert_entity", "entity_id": "elena-voss", "kind": "person", "display": "Elena Voss", "aliases": []}]
+        for idx, pred_val in enumerate(("@mention", "- item", "-", "1_000", "0x10", ".inf", ".nan")):
+            pred_map = ["role", "base", "employer", "language", "tool", "status-summary", "primary-project"]
+            ops.append({
+                "op": "create_fact",
+                "entity": "elena-voss",
+                "predicate": pred_map[idx],
+                "value": pred_val,
+                "confidence": 0.9,
+                "assertion": "stated",
+                "trust": "owner",
+            })
+        ops_file = Path(self._tmp.name) / "adv_yaml_ops.json"
+        ops_file.write_text(json.dumps(ops), encoding="utf-8")
+        b = json.loads(
+            self.run_kf("transact", "begin", "--idempotency-key", "adv-yaml", "--actor", "agent-owner-00000001", "--json", check=True).stdout
+        )["data"]
+        self.run_kf("transact", "add", "--txn-id", b["transaction_id"], "--ops-file", str(ops_file), check=True)
+        self.run_kf("transact", "commit", "--txn-id", b["transaction_id"], "--yes", "--rebuild", check=True)
+        for no_pyyaml in ("0", "1"):
+            q = json.loads(self.run_kf("query", "facts", "--entity", "elena-voss", "--json", check=True, extra_env={"KF_NO_PYYAML": no_pyyaml}).stdout)["data"]["facts"]
+            by_pred = {row["predicate"]: row["value"] for row in q}
+            self.assertEqual(by_pred["role"], "@mention")
+            self.assertEqual(by_pred["base"], "- item")
+            self.assertEqual(by_pred["employer"], "-")
+            self.assertEqual(by_pred["language"], "1_000")
+            self.assertEqual(by_pred["tool"], "0x10")
+            self.assertEqual(by_pred["status-summary"], ".inf")
+            self.assertEqual(by_pred["primary-project"], ".nan")
+            self.assertEqual(self.run_kf("lint", "--strict", extra_env={"KF_NO_PYYAML": no_pyyaml}).returncode, 0)
+
+    def test_hist_stem_re_and_crlf_eol_lint_and_reproducibility(self) -> None:
+        import importlib
+
+        sys.path.insert(0, str(REPO_ROOT / "tools"))
+        try:
+            schema_check = importlib.import_module("kflib.schema_check")
+            model = importlib.import_module("kflib.model")
+        finally:
+            sys.path.pop(0)
+
+        for valid_stem in ("2026-10-15", "2026-10-15-2", "2026-10-15-9", "2026-10-15-10", "2026-10-15-25", "2026-10-15-105"):
+            self.assertIsNotNone(schema_check.HIST_STEM_RE.fullmatch(valid_stem), f"expected valid stem: {valid_stem}")
+        for invalid_stem in ("2026-10-15-0", "2026-10-15-1", "2026-10-15-02", "2026-10-15-", "x-2026-10-15"):
+            self.assertIsNone(schema_check.HIST_STEM_RE.fullmatch(invalid_stem), f"expected invalid stem: {invalid_stem}")
+
+        self.init_vault()
+        self.assertTrue((self.vault / ".gitattributes").is_file())
+        # atomic_write_text normalizes CRLF/CR to LF
+        probe = self.vault / "knowledge/notes/crlf-probe.md"
+        model.atomic_write_text(probe, "---\ntype: note\nid: note-probe\ntitle: Probe\nkind: general\nauthoritative: false\n---\r\n\r\nHello\rWorld\r\n")
+        self.assertNotIn(b"\r", probe.read_bytes())
+        probe.unlink()
+
+        # Raw CRLF injected into canonical knowledge, schema YAML, or _generated/ fails strict lint
+        for rel in ("knowledge/entities.md", "factory/schema/manifest.yaml", "_generated/views/catalog.md"):
+            target = self.vault / rel
+            orig = target.read_bytes()
+            target.write_bytes(orig.replace(b"\n", b"\r\n"))
+            bad = self.run_kf("lint", "--strict")
+            self.assertNotEqual(bad.returncode, 0, f"CRLF in {rel} must fail strict lint")
+            self.assertIn("non-LF", bad.stdout + bad.stderr)
+            target.write_bytes(orig)
+
+        self.assertEqual(self.run_kf("lint", "--strict").returncode, 0)
+
 
 if __name__ == "__main__":
     unittest.main()

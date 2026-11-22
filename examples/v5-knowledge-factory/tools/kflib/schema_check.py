@@ -48,7 +48,8 @@ class Finding:
         return {"severity": self.severity, "path": self.path, "message": self.message}
 
 
-HIST_STEM_RE = re.compile(r"\d{4}-\d{2}-\d{2}(?:-[2-9]\d*|-1\d+)?")
+# Matches YYYY-MM-DD or YYYY-MM-DD-<N> where collision counter N >= 2 (e.g. 2026-10-15, 2026-10-15-2, 2026-10-15-10)
+HIST_STEM_RE = re.compile(r"^\d{4}-\d{2}-\d{2}(?:-(?:[2-9]|[1-9]\d+))?$")
 
 
 def _check_field_type(kind: str, value: Any) -> None:
@@ -164,12 +165,32 @@ def lint_vault(
     type_schemas, schema_findings = _load_type_schemas(root)
     findings.extend(schema_findings)
 
+    schema_dir = root / "factory/schema"
+    if schema_dir.is_dir():
+        for sp in sorted(schema_dir.rglob("*.yaml")):
+            if b"\r" in sp.read_bytes():
+                findings.append(
+                    Finding(
+                        "ERROR",
+                        rel_path(sp, root),
+                        "file contains non-LF line endings (CR/CRLF); normalize to LF ('\\n') for deterministic digests",
+                    )
+                )
+
     # Validate entities & alias uniqueness
     entities: dict[str, dict[str, Any]] = {}
     ent_path = root / "knowledge/entities.md"
     if not ent_path.is_file():
         findings.append(Finding("ERROR", "knowledge/entities.md", "missing canonical entity registry knowledge/entities.md"))
     else:
+        if b"\r" in ent_path.read_bytes():
+            findings.append(
+                Finding(
+                    "ERROR",
+                    "knowledge/entities.md",
+                    "file contains non-LF line endings (CR/CRLF); normalize to LF ('\\n') for deterministic digests",
+                )
+            )
         try:
             ent_fm, _ = split_frontmatter(ent_path)
             if "entity-registry" in type_schemas:
@@ -233,6 +254,14 @@ def lint_vault(
             continue
         for p in sorted(base.rglob("*.md")):
             r = rel_path(p, root)
+            if r != "knowledge/entities.md" and b"\r" in p.read_bytes():
+                findings.append(
+                    Finding(
+                        "ERROR",
+                        r,
+                        "file contains non-LF line endings (CR/CRLF); normalize to LF ('\\n') for deterministic digests",
+                    )
+                )
             try:
                 fm, body = split_frontmatter(p)
             except Exception as exc:
@@ -259,6 +288,25 @@ def lint_vault(
     decisions_by_id: dict[str, list[tuple[Path, str, dict[str, Any]]]] = defaultdict(list)
     proposals_by_id: dict[str, tuple[str, dict[str, Any]]] = {}
     reviews_list: list[tuple[str, dict[str, Any]]] = []
+
+    records_by_rel: dict[str, dict[str, Any]] = {r: fm for _, r, fm, _ in md_records}
+    anchored_history_paths: set[str] = set()
+    for _, r_head, fm_head, _ in md_records:
+        t_head = fm_head.get("type")
+        is_canon_head = (
+            (t_head == "fact" and r_head == f"knowledge/facts/{fm_head.get('entity')}/{fm_head.get('predicate')}.md")
+            or (t_head == "skill" and r_head == f"knowledge/skills/{fm_head.get('slug')}.md")
+            or (t_head == "guidance" and r_head == f"knowledge/guidance/{fm_head.get('slug')}.md")
+            or (t_head == "decision" and r_head == f"knowledge/decisions/{fm_head.get('id')}.md")
+        )
+        if not is_canon_head:
+            continue
+        seen_chain = {r_head}
+        cur_sup = fm_head.get("supersedes")
+        while isinstance(cur_sup, str) and cur_sup not in seen_chain and cur_sup in records_by_rel:
+            seen_chain.add(cur_sup)
+            anchored_history_paths.add(cur_sup)
+            cur_sup = records_by_rel[cur_sup].get("supersedes")
 
     for p, r, fm, body in md_records:
         known_link_targets.update((r, r.removesuffix(".md")))
@@ -305,6 +353,8 @@ def lint_vault(
                         findings.append(
                             Finding("ERROR", r, f"superseded fact must reside at knowledge/facts/{ent}/{pred}/YYYY-MM-DD[-N].md")
                         )
+                elif fm.get("status") == "retracted" and is_hist and r in anchored_history_paths:
+                    pass
                 else:
                     if r != expected_head:
                         findings.append(
@@ -360,6 +410,8 @@ def lint_vault(
                 elif fm.get("status") == "superseded":
                     if not is_hist:
                         findings.append(Finding("ERROR", r, f"superseded skill must reside at knowledge/skills/{slug}/YYYY-MM-DD[-N].md"))
+                elif fm.get("status") == "retracted" and is_hist and r in anchored_history_paths:
+                    pass
                 elif r != expected_head:
                     findings.append(Finding("ERROR", r, f"{fm.get('status') or 'non-active'} skill '{slug}' must reside at {expected_head}"))
             ver = fm.get("version")
@@ -395,6 +447,8 @@ def lint_vault(
                 elif fm.get("status") == "superseded":
                     if not is_hist:
                         findings.append(Finding("ERROR", r, f"superseded guidance must reside at knowledge/guidance/{slug}/YYYY-MM-DD[-N].md"))
+                elif fm.get("status") == "retracted" and is_hist and r in anchored_history_paths:
+                    pass
                 elif r != expected_head:
                     findings.append(Finding("ERROR", r, f"{fm.get('status') or 'non-active'} guidance '{slug}' must reside at {expected_head}"))
             if fm.get("status") == "retracted" and (not fm.get("retracted_at") or not fm.get("retraction_reason")):
@@ -446,6 +500,18 @@ def lint_vault(
                 if ent not in entities:
                     findings.append(Finding("ERROR", r, f"signal references unknown entity '{ent}'"))
             _check_evidence_paths(root, r, fm.get("evidence", []), findings, ("knowledge/events/", "sources/"))
+            if fm.get("status") in {"resolved", "dismissed"}:
+                if not fm.get("resolved_at"):
+                    findings.append(Finding("ERROR", r, f"{fm.get('status')} signal requires resolved_at"))
+                sig_rcpt = fm.get("resolved_by_receipt")
+                if not isinstance(sig_rcpt, str) or not (root / f"factory/receipts/{sig_rcpt}.md").is_file():
+                    findings.append(
+                        Finding(
+                            "ERROR",
+                            r,
+                            f"{fm.get('status')} signal requires an existing receipt in factory/receipts/ (got {sig_rcpt!r})",
+                        )
+                    )
 
         elif rtype == "proposal":
             from .governance import compute_proposal_hash
@@ -620,8 +686,14 @@ def _check_supersedes_chain(
     prior_fm, _ = split_frontmatter(target)
     if prior_fm.get("type") != fm.get("type"):
         findings.append(Finding("ERROR", rel, f"supersedes target type mismatch: {prior_fm.get('type')!r} != {fm.get('type')!r}"))
-    if prior_fm.get("status") != "superseded":
-        findings.append(Finding("ERROR", rel, f"supersedes target {sup} must have status 'superseded', got {prior_fm.get('status')!r}"))
+    if prior_fm.get("status") not in {"superseded", "retracted"}:
+        findings.append(
+            Finding(
+                "ERROR",
+                rel,
+                f"supersedes target {sup} must have status 'superseded' or 'retracted', got {prior_fm.get('status')!r}",
+            )
+        )
     for k in match_keys:
         if prior_fm.get(k) != fm.get(k):
             findings.append(Finding("ERROR", rel, f"supersedes mismatch on '{k}': {prior_fm.get(k)!r} != {fm.get(k)!r}"))
@@ -631,7 +703,7 @@ def _check_supersedes_chain(
         old_ver, new_ver = prior_fm.get("version"), fm.get("version")
         if isinstance(old_ver, int) and isinstance(new_ver, int) and new_ver <= old_ver:
             findings.append(Finding("ERROR", rel, f"superseding skill version ({new_ver}) must be > prior version ({old_ver})"))
-    if fm.get("type") == "fact":
+    if fm.get("type") == "fact" and prior_fm.get("status") == "superseded":
         old_end = parse_date(prior_fm.get("valid_until"))
         new_start = parse_date(fm.get("valid_from"))
         if old_end is None or new_start is None:

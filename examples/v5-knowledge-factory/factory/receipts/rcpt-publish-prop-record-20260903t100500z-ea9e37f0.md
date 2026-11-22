@@ -32,7 +32,7 @@ touched_files:
   - path: factory/proposals/prop-record-concordance-p-20260902t140000z-e8852f69.md
     action: updated
     before_hash: "sha256:d27509e8c1efe0d94d8dc113b0f25888f29df329fc99fe66c28f1df71fe0b4e2"
-    after_hash: "sha256:a243c52cd268922f34013ba134b393e721600e031c3485f65b47cf67f021851b"
+    after_hash: "sha256:8d1cdce68ec00c92d434fb0def7ade0879ab341764db26baa172b8f200474b6a"
   - path: knowledge/facts/concordance/primary-instrument.md
     action: created
     before_hash: null

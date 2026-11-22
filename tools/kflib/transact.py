@@ -413,8 +413,17 @@ def compile_operations(
             _verify_precondition_hash(root, writes, slot_rel, op)
 
             if kind == "create_fact":
+                supersedes_rel: str | None = None
                 if cur_text is not None:
-                    raise ValueError(f"fact already exists at {slot_rel}; use supersede_fact")
+                    old_fm, old_body = split_frontmatter_text(cur_text, source=slot_rel)
+                    if old_fm.get("status") != "retracted":
+                        raise ValueError(f"fact already exists at {slot_rel}; use supersede_fact")
+                    hist_stem = str(
+                        old_fm.get("valid_from")
+                        or parse_datetime(old_fm.get("retracted_at") or old_fm["observed_at"]).date().isoformat()
+                    )
+                    supersedes_rel = _next_history_slot(root, writes, f"knowledge/facts/{ent}/{pred}", hist_stem)
+                    writes[supersedes_rel] = format_markdown(dict(old_fm, status="retracted", pinned=False), old_body)
                 if "value" not in op:
                     raise ValueError("create_fact requires value")
                 conf = validate_confidence(op.get("confidence"))
@@ -433,7 +442,7 @@ def compile_operations(
                     "assertion": str(op.get("assertion") or "stated"),
                     "trust": str(op.get("trust") or default_trust),
                     "derived_from": list(op.get("derived_from") or []),
-                    "supersedes": None,
+                    "supersedes": supersedes_rel,
                     "pinned": bool(op.get("pinned", False)),
                     "last_confirmed": str(op.get("last_confirmed") or ref_today),
                     "review_after": str(op["review_after"]) if op.get("review_after") else None,
@@ -448,9 +457,17 @@ def compile_operations(
                 old_fm, old_body = split_frontmatter_text(cur_text, source=slot_rel)
                 new_valid_from = str(op.get("valid_from") or ref_today)
                 parse_date(new_valid_from)
-                hist_stem = str(old_fm.get("valid_from") or parse_datetime(old_fm["observed_at"]).date().isoformat())
-                hist_rel = _next_history_slot(root, writes, f"knowledge/facts/{ent}/{pred}", hist_stem)
-                archived_fm = dict(old_fm, status="superseded", valid_until=new_valid_from, pinned=False)
+                if old_fm.get("status") == "retracted":
+                    hist_stem = str(
+                        old_fm.get("valid_from")
+                        or parse_datetime(old_fm.get("retracted_at") or old_fm["observed_at"]).date().isoformat()
+                    )
+                    hist_rel = _next_history_slot(root, writes, f"knowledge/facts/{ent}/{pred}", hist_stem)
+                    archived_fm = dict(old_fm, status="retracted", pinned=False)
+                else:
+                    hist_stem = str(old_fm.get("valid_from") or parse_datetime(old_fm["observed_at"]).date().isoformat())
+                    hist_rel = _next_history_slot(root, writes, f"knowledge/facts/{ent}/{pred}", hist_stem)
+                    archived_fm = dict(old_fm, status="superseded", valid_until=new_valid_from, pinned=False)
                 writes[hist_rel] = format_markdown(archived_fm, old_body)
 
                 conf = validate_confidence(op.get("confidence", old_fm.get("confidence")))
@@ -480,6 +497,10 @@ def compile_operations(
                 if cur_text is None:
                     raise ValueError(f"cannot confirm missing fact {slot_rel}")
                 old_fm, old_body = split_frontmatter_text(cur_text, source=slot_rel)
+                if old_fm.get("status") != "active":
+                    raise ValueError(
+                        f"cannot confirm non-active fact {slot_rel} (status={old_fm.get('status')!r})"
+                    )
                 updated_fm = dict(old_fm, last_confirmed=str(op.get("last_confirmed") or ref_today))
                 if "review_after" in op:
                     updated_fm["review_after"] = op["review_after"]
@@ -492,6 +513,8 @@ def compile_operations(
                 if not reason:
                     raise ValueError("retract_fact requires non-empty reason")
                 old_fm, old_body = split_frontmatter_text(cur_text, source=slot_rel)
+                if old_fm.get("status") == "retracted":
+                    raise ValueError(f"cannot retract already-retracted fact {slot_rel}")
                 ret_fm = dict(
                     old_fm,
                     status="retracted",
@@ -509,8 +532,15 @@ def compile_operations(
             cur_text = _read_effective_text(root, writes, slot_rel)
             _verify_precondition_hash(root, writes, slot_rel, op)
             if kind == "create_skill":
+                sk_supersedes: str | None = None
+                default_ver = 1
                 if cur_text is not None:
-                    raise ValueError(f"skill already exists at {slot_rel}; use supersede_skill")
+                    old_fm, old_body = split_frontmatter_text(cur_text, source=slot_rel)
+                    if old_fm.get("status") != "retracted":
+                        raise ValueError(f"skill already exists at {slot_rel}; use supersede_skill")
+                    sk_supersedes = _next_history_slot(root, writes, f"knowledge/skills/{slug}", ref_today)
+                    writes[sk_supersedes] = format_markdown(dict(old_fm, status="retracted", pinned=False), old_body)
+                    default_ver = int(old_fm.get("version", 1)) + 1
                 if not op.get("title"):
                     raise ValueError("create_skill requires title (pass --op-title with `propose create` or --title with `transact add`)")
                 if not op.get("domain"):
@@ -519,7 +549,9 @@ def compile_operations(
                     raise ValueError("create_skill requires non-empty triggers list")
                 if not isinstance(op.get("verification"), list) or not op.get("verification"):
                     raise ValueError("create_skill requires non-empty verification list")
-                ver = int(op.get("version", 1))
+                ver = int(op.get("version", default_ver))
+                if sk_supersedes is not None and ver < default_ver:
+                    raise ValueError(f"replacement skill version ({ver}) must be >= {default_ver}")
                 sk_id = _allocate_id(op.get("id"), f"skill-{slug}", f"v{ver}", used_ids)
                 sk_fm: dict[str, Any] = {
                     "type": "skill",
@@ -540,7 +572,7 @@ def compile_operations(
                     "observed_at": str(op.get("observed_at") or now_iso),
                     "last_confirmed": str(op.get("last_confirmed") or ref_today),
                     "review_after": str(op["review_after"]) if op.get("review_after") else None,
-                    "supersedes": None,
+                    "supersedes": sk_supersedes,
                     "pinned": bool(op.get("pinned", False)),
                 }
                 writes[slot_rel] = format_markdown(sk_fm, str(op.get("body") or f"# {op['title']}"))
@@ -549,7 +581,8 @@ def compile_operations(
                     raise ValueError(f"cannot supersede missing skill {slot_rel}")
                 old_fm, old_body = split_frontmatter_text(cur_text, source=slot_rel)
                 hist_rel = _next_history_slot(root, writes, f"knowledge/skills/{slug}", ref_today)
-                writes[hist_rel] = format_markdown(dict(old_fm, status="superseded", pinned=False), old_body)
+                archived_sk_status = "retracted" if old_fm.get("status") == "retracted" else "superseded"
+                writes[hist_rel] = format_markdown(dict(old_fm, status=archived_sk_status, pinned=False), old_body)
                 next_ver = int(op.get("version") or (int(old_fm.get("version", 1)) + 1))
                 if next_ver <= int(old_fm.get("version", 1)):
                     raise ValueError(f"supersede_skill version ({next_ver}) must be > prior version ({old_fm.get('version')})")
@@ -584,6 +617,8 @@ def compile_operations(
                 if not reason:
                     raise ValueError("retract_skill requires reason")
                 old_fm, old_body = split_frontmatter_text(cur_text, source=slot_rel)
+                if old_fm.get("status") == "retracted":
+                    raise ValueError(f"cannot retract already-retracted skill {slot_rel}")
                 writes[slot_rel] = format_markdown(
                     dict(old_fm, status="retracted", pinned=False, retracted_at=now_iso, retraction_reason=reason),
                     old_body,
@@ -597,8 +632,13 @@ def compile_operations(
             cur_text = _read_effective_text(root, writes, slot_rel)
             _verify_precondition_hash(root, writes, slot_rel, op)
             if kind == "create_guidance":
+                gd_supersedes: str | None = None
                 if cur_text is not None:
-                    raise ValueError(f"guidance already exists at {slot_rel}; use supersede_guidance")
+                    old_fm, old_body = split_frontmatter_text(cur_text, source=slot_rel)
+                    if old_fm.get("status") != "retracted":
+                        raise ValueError(f"guidance already exists at {slot_rel}; use supersede_guidance")
+                    gd_supersedes = _next_history_slot(root, writes, f"knowledge/guidance/{slug}", ref_today)
+                    writes[gd_supersedes] = format_markdown(dict(old_fm, status="retracted", pinned=False), old_body)
                 if not op.get("title"):
                     raise ValueError("create_guidance requires title (pass --op-title with `propose create` or --title with `transact add`)")
                 if not op.get("domain"):
@@ -623,7 +663,7 @@ def compile_operations(
                     "observed_at": str(op.get("observed_at") or now_iso),
                     "last_confirmed": str(op.get("last_confirmed") or ref_today),
                     "review_after": str(op["review_after"]) if op.get("review_after") else None,
-                    "supersedes": None,
+                    "supersedes": gd_supersedes,
                     "pinned": bool(op.get("pinned", False)),
                 }
                 writes[slot_rel] = format_markdown(gd_fm, str(op.get("body") or f"# {op['title']}"))
@@ -632,7 +672,8 @@ def compile_operations(
                     raise ValueError(f"cannot supersede missing guidance {slot_rel}")
                 old_fm, old_body = split_frontmatter_text(cur_text, source=slot_rel)
                 hist_rel = _next_history_slot(root, writes, f"knowledge/guidance/{slug}", ref_today)
-                writes[hist_rel] = format_markdown(dict(old_fm, status="superseded", pinned=False), old_body)
+                archived_gd_status = "retracted" if old_fm.get("status") == "retracted" else "superseded"
+                writes[hist_rel] = format_markdown(dict(old_fm, status=archived_gd_status, pinned=False), old_body)
                 gd_id = _allocate_id(op.get("id"), f"guid-{slug}", ref_today, used_ids)
                 gd_fm = {
                     "type": "guidance",
@@ -662,6 +703,8 @@ def compile_operations(
                 if not reason:
                     raise ValueError("retract_guidance requires reason")
                 old_fm, old_body = split_frontmatter_text(cur_text, source=slot_rel)
+                if old_fm.get("status") == "retracted":
+                    raise ValueError(f"cannot retract already-retracted guidance {slot_rel}")
                 writes[slot_rel] = format_markdown(
                     dict(old_fm, status="retracted", pinned=False, retracted_at=now_iso, retraction_reason=reason),
                     old_body,
@@ -754,10 +797,12 @@ def _publication_write_order_key(rel: str) -> tuple[int, str]:
     if rel.startswith("knowledge/"):
         return (0, rel)
     if rel.startswith("factory/receipts/"):
+        return (1, rel)
+    if rel.startswith("factory/signals/"):
         return (2, rel)
     if rel.startswith("factory/proposals/"):
         return (3, rel)
-    return (1, rel)
+    return (2, rel)
 
 
 def execute_atomic_publication(

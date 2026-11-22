@@ -119,6 +119,8 @@ def split_frontmatter(path: Path) -> tuple[dict[str, Any], str]:
 
 
 def split_frontmatter_text(text: str, source: str = "<memory>") -> tuple[dict[str, Any], str]:
+    if "\r" in text:
+        text = text.replace("\r\n", "\n").replace("\r", "\n")
     match = FRONTMATTER_RE.match(text)
     if not match:
         return {}, text
@@ -143,7 +145,8 @@ def format_markdown(frontmatter: dict[str, Any], body: str = "", *, sort_keys: b
 def atomic_write_text(path: Path, content: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(f".{path.name}.tmp.{os.getpid()}")
-    tmp.write_text(content, encoding="utf-8")
+    lf_content = content.replace("\r\n", "\n").replace("\r", "\n") if "\r" in content else content
+    tmp.write_text(lf_content, encoding="utf-8", newline="\n")
     tmp.replace(path)
 
 

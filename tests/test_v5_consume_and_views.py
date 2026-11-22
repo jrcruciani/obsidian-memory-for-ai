@@ -436,6 +436,14 @@ class V5ConsumeAndViewsTests(unittest.TestCase):
         self.assertNotEqual(bad_lint.returncode, 0)
         self.assertIn("active fact must reside at knowledge/facts/elena-voss/employer.md", bad_lint.stdout + bad_lint.stderr)
 
+    def test_empty_or_whitespace_search_query_returns_no_records(self) -> None:
+        for blank_term in ("", "   ", "///"):
+            res = json.loads(self.run_kf("query", "search", blank_term, "--json", check=True).stdout)
+            self.assertEqual(res["data"]["results"], [], f"blank search {blank_term!r} should not match records")
+            self.assertIn("No records found", res["text"])
+        res_dash = json.loads(self.run_kf("query", "search", "--", "---", "--json", check=True).stdout)
+        self.assertEqual(res_dash["data"]["results"], [])
+
 
 
 if __name__ == "__main__":

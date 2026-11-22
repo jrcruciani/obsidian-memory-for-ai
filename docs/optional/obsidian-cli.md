@@ -1,8 +1,8 @@
 # Leveraging Obsidian CLI for Memory Maintenance
 
-> **Requires:** Obsidian 1.12+ with CLI enabled (Settings → General → Command line interface). The Obsidian app must be running.
+> **Optional non-protocol guide (v5.0 framing):** Obsidian CLI is a purely optional local desktop convenience and is **not** part of the normative [`SPEC-v5.0.md`](../../SPEC-v5.0.md) contract. The canonical Knowledge Factory v5.0 engine remains plain Markdown + Git + `python3 tools/kf.py` (see [`examples/v5-knowledge-factory/tools/`](../../examples/v5-knowledge-factory/tools/)). Note: several shell snippets below originate from earlier personal vault layouts (`memory/`, `last_reviewed`); in a v5.0 Knowledge Factory vault, use Obsidian CLI only for read-only inspection or non-authoritative `knowledge/notes/`, and always route canonical `knowledge/` mutations through `kf.py` (`capture`, `propose`, `review`, `publish`, `rebuild`).
 >
-> **v3.1 note:** Obsidian CLI is useful for local maintenance, but it is not required for v3 compatibility. The stable v3 core remains plain Markdown plus the portable scripts in `examples/v3-minimal-vault/tools/`.
+> **Requires:** Obsidian 1.12+ with CLI enabled (Settings → General → Command line interface). The Obsidian app must be running.
 
 > [!tip] **CLI-first principle**
 > If Obsidian is running and a CLI command can accomplish what you need — reading files, searching, updating properties, auditing links, toggling tasks — **always prefer it** over reading files into AI context, parsing YAML manually, or using grep/sed on raw Markdown. The CLI uses Obsidian's native index, resolves wikilinks correctly, and updates the graph automatically. Fall back to direct file I/O only when the CLI can't do the job (headless environments, remote access, bulk content rewrites).

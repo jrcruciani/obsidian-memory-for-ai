@@ -18,12 +18,19 @@ class YAMLError(ValueError):
     """Raised when YAML text cannot be parsed or serialized."""
 
 
-_SIMPLE_STR_RE = re.compile(r"^[A-Za-z0-9_./@-][A-Za-z0-9_./@ -]*$")
-_YAML_KEYWORDS = {
+_SIMPLE_STR_RE = re.compile(r"^[A-Za-z](?:[A-Za-z0-9_./ -]*[A-Za-z0-9_./-])?$")
+_YAML_KEYWORDS_LOWER = {
     "true", "false", "null", "~", "yes", "no", "on", "off",
-    "True", "False", "Null", "TRUE", "FALSE", "NULL", "Yes", "No", "On", "Off",
+    "y", "n", "inf", "nan",
 }
-_NUM_RE = re.compile(r"^[+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?$")
+_INT_DEC_RE = re.compile(r"^[+-]?(?:0|[1-9](?:_?\d)*)$")
+_INT_HEX_RE = re.compile(r"^[+-]?0x[0-9a-fA-F_]+$")
+_INT_BIN_RE = re.compile(r"^[+-]?0b[01_]+$")
+_INT_OCT_RE = re.compile(r"^[+-]?0o[0-7_]+$")
+_INT_OCT_LEGACY_RE = re.compile(r"^[+-]?0[0-7_]+$")
+_INF_RE = re.compile(r"^([+-]?)\.(?:inf|Inf|INF)$")
+_NAN_RE = re.compile(r"^\.(?:nan|NaN|NAN)$")
+_NUM_RE = re.compile(r"^[+-]?(?:\d[\d_]*\.[\d_]*|\.[\d_]+)(?:[eE][+-]?\d+)?$|^[+-]?\d+(?:[eE][+-]?\d+)$")
 
 
 def has_pyyaml(force_fallback: bool = False) -> bool:
@@ -90,8 +97,7 @@ def _format_scalar(value: Any) -> str:
             value
             and value == value.strip()
             and _SIMPLE_STR_RE.fullmatch(value)
-            and value not in _YAML_KEYWORDS
-            and not _NUM_RE.fullmatch(value)
+            and value.lower() not in _YAML_KEYWORDS_LOWER
         ):
             return value
         return json.dumps(value, ensure_ascii=False)
@@ -237,9 +243,9 @@ def _parse_scalar(token: str) -> Any:
     token = token.strip()
     if token in ("", "null", "~", "Null", "NULL"):
         return None
-    if token in ("true", "True", "TRUE"):
+    if token in ("true", "True", "TRUE", "yes", "Yes", "YES", "on", "On", "ON"):
         return True
-    if token in ("false", "False", "FALSE"):
+    if token in ("false", "False", "FALSE", "no", "No", "NO", "off", "Off", "OFF"):
         return False
     if token == "[]":
         return []
@@ -260,10 +266,25 @@ def _parse_scalar(token: str) -> Any:
             k, v = _split_key_value(part)
             result[k] = _parse_scalar(v or "")
         return result
-    if re.fullmatch(r"[+-]?\d+", token):
-        return int(token)
+    if _INT_DEC_RE.fullmatch(token):
+        return int(token.replace("_", ""))
+    if _INT_HEX_RE.fullmatch(token):
+        return int(token.replace("_", ""), 16)
+    if _INT_BIN_RE.fullmatch(token):
+        return int(token.replace("_", ""), 2)
+    if _INT_OCT_RE.fullmatch(token):
+        return int(token.replace("_", ""), 8)
+    if _INT_OCT_LEGACY_RE.fullmatch(token):
+        sign = -1 if token.startswith("-") else 1
+        digits = token.lstrip("+-").replace("_", "")
+        return sign * int(digits, 8)
+    m_inf = _INF_RE.fullmatch(token)
+    if m_inf:
+        return float("-inf") if m_inf.group(1) == "-" else float("inf")
+    if _NAN_RE.fullmatch(token):
+        return float("nan")
     if _NUM_RE.fullmatch(token):
-        return float(token)
+        return float(token.replace("_", ""))
     return token
 
 
@@ -579,7 +600,7 @@ def _parse_list(raw_lines: list[str], index: int, base_indent: int) -> tuple[lis
             continue
         map_key: str | None = None
         map_val: str | None = None
-        if not (rest.startswith('"') or rest.startswith("'") or rest.startswith("[") or rest.startswith("{")):
+        if not (rest.startswith("[") or rest.startswith("{")):
             try:
                 map_key, map_val = _split_key_value(rest)
             except YAMLError:
