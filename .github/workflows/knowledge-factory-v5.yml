@@ -24,6 +24,7 @@ jobs:
         run: |
           python -m unittest discover -s tests -v
           python tests/eval/run_eval.py
+          python tests/eval/run_personal_eval.py
 
       - name: Install optional PyYAML dependency
         run: python -m pip install -r examples/v5-knowledge-factory/requirements.txt
@@ -43,4 +44,6 @@ jobs:
         run: python -m unittest discover -s tests -v
 
       - name: Run deterministic 26-contract offline query evaluations
-        run: python tests/eval/run_eval.py
+        run: |
+          python tests/eval/run_eval.py
+          python tests/eval/run_personal_eval.py

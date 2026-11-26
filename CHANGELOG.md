@@ -1,5 +1,20 @@
 # Changelog
 
+## v5.1.0 - 2026-11-26
+
+**Personal Memory Mode, Hybrid Retrieval, Locking, OKF v0.2 Interop & Stdio MCP**
+
+- **Personal Memory Mode (`init --profile personal`, `remember`, `forget`, `note`):** Streamlines single-owner personal vaults with 1-command bitemporal fact capture/supersession (`auto_entity`, `allow_custom_predicates`, audit receipts), non-destructive `forget`, quick narrative `note`, and an Obsidian-native `_generated/views/dashboard.md` — while keeping `skills`, `guidance`, and `trust: external` writes review-gated against prompt injection.
+- **Zero-copy shadow validation & cooperative write locking:** `validate_candidate_writes()` no longer copies `sources/` (or `tools/`/binary assets) into `/tmp`, and `kflib/locking.py` wraps mutating operations with a re-entrant cooperative lock (`factory/_staging/.kf.lock`).
+- **Multi-term BM25 search & fast O(1) index drift check:** Upgrades `query search` and `query skills --trigger` from literal substring matching to NFKD-folded, field-weighted multi-term Okapi BM25 with `--include-notes`, `--include-sources`, and `--limit`; `_warn_if_index_stale()` checks embedded banner digests instead of rebuilding indexes on every query.
+- **Disposable SQLite FTS5 + local Ollama embedding RRF index (`kf.py index build`, `query search --hybrid`):** Adds an optional, 100% regenerable read model at `_generated/indexes/search.sqlite` (Markdown + Git remain the sole canonical truth).
+- **Multi-hop & temporal graph (`query graph --depth N --to <target> --as-of YYYY-MM-DD`):** Adds BFS neighborhood traversal, shortest-path lookup, and point-in-time fact edge filtering.
+- **Token-aware bootstrap (`--max-tokens`, `chars_per_token`), normalized contradiction scanning & Sleep-Time Curation (`curate sleep-pack`):** Prevents false contradictions from whitespace/case/accent variations and bundles drift + signals + `<untrusted_source_data>` excerpts for offline LLM curation.
+- **Google OKF v0.2 interoperability & forgiving lint (`export-okf`, `import-okf`, `lint --forgiving`):** Exports living knowledge to Open Knowledge Format v0.2 and forgivingly imports external bundles into immutable `sources/okf-imports/` + curation signals.
+- **Ledger archival (`archive-ledger --before YYYY-MM-DD --yes`, resolving `OD-004`):** Rolls up old closed signals and unreferenced committed receipts into yearly SHA-256 rollup files under `factory/archive/`.
+- **Zero-dependency stdio MCP server (`tools/kf_mcp.py`):** Exposes 12 JSON-RPC 2.0 MCP tools and 4 Markdown resources over Python stdlib.
+- **Personal evaluation & scale stress gate (`tests/eval/run_personal_eval.py`):** Adds 8 LongMemEval/LoCoMo-inspired personal evaluations (including a 280-doc + 50 MB `sources/` stress test) and 17 new TDD unit/integration tests (58/58 total tests passing in both PyYAML and `KF_NO_PYYAML=1` modes).
+
 ## v5.0.0 - 2026-11-22
 
 **The Knowledge Factory Reboot — Clean-Break v5.0 Protocol & Unified Toolkit**

@@ -12,6 +12,7 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
+from .locking import vault_write_lock
 from .model import (
     AGENT_ID_RE,
     DECISION_ID_RE,
@@ -771,14 +772,23 @@ def compile_operations(
 
 
 def validate_candidate_writes(root: Path, writes: dict[str, str | None]) -> None:
-    """Validate candidate writes in an isolated shadow copy before mutating the vault."""
+    """Validate candidate writes in an isolated shadow copy before mutating the vault.
+
+    Only copies canonical ``knowledge/`` and ``factory/`` metadata (never ``sources/``,
+    ``tools/``, ``_generated/``, ``.git/``, or binary assets), while resolving
+    read-only ``sources/`` evidence references against ``root``.
+    """
     with tempfile.TemporaryDirectory() as tmp:
         shadow = Path(tmp) / "shadow"
-        shutil.copytree(
-            root,
-            shadow,
-            ignore=shutil.ignore_patterns("_staging", "_generated", ".git", "__pycache__", "*.pyc"),
-        )
+        shadow.mkdir(parents=True, exist_ok=True)
+        for subdir in ("knowledge", "factory"):
+            src_dir = root / subdir
+            if src_dir.is_dir():
+                shutil.copytree(
+                    src_dir,
+                    shadow / subdir,
+                    ignore=shutil.ignore_patterns("_staging", "archive", "__pycache__", "*.pyc"),
+                )
         for rel, content in writes.items():
             target = safe_path(shadow, rel)
             if content is None:
@@ -786,7 +796,13 @@ def validate_candidate_writes(root: Path, writes: dict[str, str | None]) -> None
                     target.unlink()
             else:
                 atomic_write_text(target, content)
-        findings = lint_vault(shadow, strict=False, check_stale=False, check_generated=False)
+        findings = lint_vault(
+            shadow,
+            strict=False,
+            check_stale=False,
+            check_generated=False,
+            sources_root=root,
+        )
         errors = [f for f in findings if f.severity == "ERROR"]
         if errors:
             detail = "; ".join(f"{e.path}: {e.message}" for e in errors[:5])
@@ -806,6 +822,44 @@ def _publication_write_order_key(rel: str) -> tuple[int, str]:
 
 
 def execute_atomic_publication(
+    root: Path,
+    *,
+    mode: str,
+    idempotency_key: str,
+    actor_id: str,
+    ops: list[dict[str, Any]],
+    writes: dict[str, str | None],
+    staging_txn_id: str | None = None,
+    expected_revision: str | None = None,
+    proposer_id: str | None = None,
+    proposal_id: str | None = None,
+    review_ids: list[str] | None = None,
+    resolved_signals: list[str] | None = None,
+    receipt_id: str | None = None,
+    receipt_body: str | None = None,
+    rebuild: bool = False,
+) -> dict[str, Any]:
+    with vault_write_lock(root):
+        return _execute_atomic_publication_unlocked(
+            root,
+            mode=mode,
+            idempotency_key=idempotency_key,
+            actor_id=actor_id,
+            ops=ops,
+            writes=writes,
+            staging_txn_id=staging_txn_id,
+            expected_revision=expected_revision,
+            proposer_id=proposer_id,
+            proposal_id=proposal_id,
+            review_ids=review_ids,
+            resolved_signals=resolved_signals,
+            receipt_id=receipt_id,
+            receipt_body=receipt_body,
+            rebuild=rebuild,
+        )
+
+
+def _execute_atomic_publication_unlocked(
     root: Path,
     *,
     mode: str,

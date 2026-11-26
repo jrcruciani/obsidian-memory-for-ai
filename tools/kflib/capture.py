@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+from .locking import vault_write_lock
 from .model import (
     NAMESPACES,
     SIGNAL_KINDS,
@@ -102,8 +103,9 @@ def capture_signal(
     }
     md_body = body.strip() or f"# Signal ({kind}): {clean_summary}\n\nEmitted by `{emitted_by}` for curation into `{target_namespace}`."
     rendered = format_markdown(fm, md_body)
-    validate_candidate_writes(root, {rel: rendered})
-    atomic_write_text(root / rel, rendered)
+    with vault_write_lock(root):
+        validate_candidate_writes(root, {rel: rendered})
+        atomic_write_text(root / rel, rendered)
     return dict(fm, path=rel, idempotent_replay=False)
 
 
@@ -158,6 +160,7 @@ def capture_event(
 
     md_body = body.strip() or f"# {clean_summary}"
     rendered = format_markdown(fm, md_body)
-    validate_candidate_writes(root, {rel: rendered})
-    atomic_write_text(root / rel, rendered)
+    with vault_write_lock(root):
+        validate_candidate_writes(root, {rel: rendered})
+        atomic_write_text(root / rel, rendered)
     return dict(fm, path=rel)

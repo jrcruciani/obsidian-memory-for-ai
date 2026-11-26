@@ -3,12 +3,17 @@
 from __future__ import annotations
 
 import datetime as dt
+import hashlib
+import math
+import re
 import sys
+from collections import Counter, deque
 from pathlib import Path
 from typing import Any
 
 from .bootstrap import render_scalar_inline
 from .model import (
+    canonical_source_digest,
     fact_interval,
     file_sha256,
     fold_text,
@@ -23,7 +28,31 @@ from .model import (
     scan_records,
     split_frontmatter,
 )
-from .rebuild import build_all_indexes, compute_graph_edges
+from .rebuild import GENERATED_BANNER_RE, build_all_indexes, compute_graph_edges
+
+_TOKEN_RE = re.compile(r"[a-z0-9]+")
+_LIGHT_SUFFIXES = (
+    "aciones", "iciones", "acion", "icion", "mente", "ation", "ition",
+    "izing", "ising", "ingly", "edly", "ness", "ment", "able", "ible",
+    "idad", "ando", "iendo", "ing", "ied", "ies", "ed", "es", "s",
+)
+
+
+def _stem_token(tok: str) -> str:
+    if len(tok) <= 4:
+        return tok
+    for suf in _LIGHT_SUFFIXES:
+        if tok.endswith(suf) and len(tok) - len(suf) >= 4:
+            return tok[: -len(suf)]
+    return tok
+
+
+def tokenize_text(text: str) -> list[str]:
+    return _TOKEN_RE.findall(fold_text(text))
+
+
+def tokenize_stemmed(text: str) -> list[str]:
+    return [_stem_token(t) for t in tokenize_text(text)]
 
 
 def query_facts(
@@ -77,20 +106,49 @@ def query_skills(
     history: bool = False,
 ) -> tuple[str, list[dict[str, Any]]]:
     needle = fold_text(trigger) if trigger else None
-    matches: list[dict[str, Any]] = []
-    lines: list[str] = []
+    needle_tokens = tokenize_stemmed(trigger) if trigger else []
+    scored_rows: list[tuple[float, str, dict[str, Any], str]] = []
     for path, fm, body in scan_records(root, "knowledge/skills", "skill"):
         if not history and not is_active_head(fm):
             continue
         if domain and fm.get("domain") != domain:
             continue
+        score = 0.0
         if needle:
-            hay = " ".join([str(fm.get("slug", "")), str(fm.get("title", "")), *(str(t) for t in (fm.get("triggers") or []))])
-            if needle not in fold_text(hay):
+            hay_meta = " ".join(
+                [
+                    str(fm.get("slug", "")),
+                    str(fm.get("title", "")),
+                    str(fm.get("domain", "")),
+                    *(str(t) for t in (fm.get("triggers") or [])),
+                    *(str(x) for x in (fm.get("inputs") or [])),
+                    *(str(x) for x in (fm.get("outputs") or [])),
+                ]
+            )
+            folded_meta = fold_text(hay_meta)
+            folded_all = f"{folded_meta} {fold_text(body)}"
+            if needle in folded_meta:
+                score += 10.0
+            elif needle in folded_all:
+                score += 5.0
+            if needle_tokens:
+                meta_toks = set(tokenize_stemmed(hay_meta))
+                all_toks = meta_toks | set(tokenize_stemmed(body))
+                matched_meta = sum(1 for t in needle_tokens if t in meta_toks)
+                matched_all = sum(1 for t in needle_tokens if t in all_toks)
+                if matched_all == len(needle_tokens):
+                    score += 6.0 + 2.0 * matched_meta
+                elif matched_meta > 0 and len(needle_tokens) == 1:
+                    score += 3.0
+            if score <= 0.0:
                 continue
         r = rel_path(path, root)
-        matches.append(dict(fm, path=r, body=body.strip()))
-        lines.append(f"{r}: {fm['slug']} (v{fm['version']}, {fm['domain']}) — {fm['title']} | triggers={fm.get('triggers')}")
+        rec = dict(fm, path=r, body=body.strip())
+        line = f"{r}: {fm['slug']} (v{fm['version']}, {fm['domain']}) — {fm['title']} | triggers={fm.get('triggers')}"
+        scored_rows.append((score, r, rec, line))
+    scored_rows.sort(key=lambda item: (-item[0], item[1]))
+    matches = [item[2] for item in scored_rows]
+    lines = [item[3] for item in scored_rows]
     if not lines:
         lines.append("No skills found.")
     return "\n".join(lines) + "\n", matches
@@ -356,16 +414,60 @@ def query_why(
 
 
 def _warn_if_index_stale(root: Path, index_rel: str) -> list[str]:
+    """Fast O(1)-per-index staleness and tamper verification via embedded digests."""
     diags: list[str] = []
     idx_path = root / index_rel
     if not idx_path.is_file():
         return diags
-    expected = build_all_indexes(root).get(index_rel)
     actual = idx_path.read_text(encoding="utf-8")
-    if expected is not None and actual != expected:
+    match = GENERATED_BANNER_RE.match(actual)
+    stale = False
+    if not match:
+        stale = True
+    else:
+        recorded_source, recorded_sha = match.group(1), match.group(2)
+        body_after_banner = actual[match.end() :]
+        actual_sha = "sha256:" + hashlib.sha256(body_after_banner.encode("utf-8")).hexdigest()
+        current_source = canonical_source_digest(root)
+        if actual_sha != recorded_sha or recorded_source != current_source:
+            stale = True
+    if stale:
         msg = f"WARN: {index_rel} is stale or hand-edited; computing canonical answer from filesystem (run `kf.py rebuild`)"
         diags.append(msg)
     return diags
+
+
+def _bm25_scores(
+    query_tokens: list[str],
+    docs_tokens: list[list[str]],
+    *,
+    k1: float = 1.5,
+    b: float = 0.75,
+) -> list[float]:
+    n_docs = len(docs_tokens)
+    if not n_docs or not query_tokens:
+        return [0.0] * n_docs
+    unique_q = list(dict.fromkeys(query_tokens))
+    avgdl = sum(len(d) for d in docs_tokens) / max(1, n_docs)
+    df: dict[str, int] = {t: 0 for t in unique_q}
+    doc_counters = [Counter(d) for d in docs_tokens]
+    for c in doc_counters:
+        for t in unique_q:
+            if c.get(t, 0) > 0:
+                df[t] += 1
+    scores: list[float] = []
+    for d, c in zip(docs_tokens, doc_counters):
+        dl = len(d)
+        s = 0.0
+        for t in unique_q:
+            tf = c.get(t, 0)
+            if tf <= 0:
+                continue
+            idf = math.log(1.0 + (n_docs - df[t] + 0.5) / (df[t] + 0.5))
+            denom = tf + k1 * (1.0 - b + b * (dl / max(1.0, avgdl)))
+            s += idf * ((tf * (k1 + 1.0)) / max(1e-9, denom))
+        scores.append(s)
+    return scores
 
 
 def query_search(
@@ -373,16 +475,31 @@ def query_search(
     term: str,
     *,
     types: set[str] | None = None,
+    include_notes: bool = False,
+    include_sources: bool = False,
+    limit: int | None = None,
 ) -> tuple[str, list[dict[str, Any]], list[str]]:
     diags = _warn_if_index_stale(root, "_generated/indexes/lexical.md")
-    allowed_types = types or {"fact", "skill", "guidance", "decision"}
+    allowed_types = set(types) if types is not None else {"fact", "skill", "guidance", "decision"}
+    if include_notes:
+        allowed_types.add("note")
+    if include_sources:
+        allowed_types.add("source")
     needle = fold_text(term)
+    q_tokens = tokenize_stemmed(term)
     if not needle:
         return f"No records found matching {term!r}\n", [], diags
+
+    # Resolve entities both from the full query and from individual query tokens
     resolved_entities = set(resolve_entity(root, term))
+    token_resolved_entities: set[str] = set()
+    for raw_tok in tokenize_text(term):
+        if len(raw_tok) >= 3:
+            token_resolved_entities.update(resolve_entity(root, raw_tok))
     entities_map = load_entities(root)
 
-    scored: list[tuple[int, str, dict[str, Any], str]] = []
+    # Collect candidate corpus entries for BM25 + field-weighted scoring
+    corpus: list[dict[str, Any]] = []
 
     if "fact" in allowed_types:
         for p, fm, body in scan_records(root, "knowledge/facts", "fact"):
@@ -392,16 +509,15 @@ def query_search(
             ent = str(fm.get("entity", ""))
             ent_names = " ".join([ent, str(entities_map.get(ent, {}).get("display", "")), *(entities_map.get(ent, {}).get("aliases") or [])])
             fm_text = f"{ent} {fm.get('predicate')} {render_scalar_inline(fm.get('value'))} {ent_names}"
-            rank: int | None = None
-            if ent in resolved_entities:
-                rank = 0
-            elif needle and needle in fold_text(fm_text):
-                rank = 1
-            elif needle and needle in fold_text(body):
-                rank = 2
-            if rank is not None:
-                line = f"[fact] {ent}/{fm['predicate']} = {render_scalar_inline(fm.get('value'))}  [{r}]"
-                scored.append((rank, r, {"type": "fact", "path": r, "entity": ent, "predicate": fm["predicate"], "value": fm.get("value")}, line))
+            corpus.append({
+                "path": r,
+                "entity_exact": ent in resolved_entities,
+                "entity_partial": ent in token_resolved_entities,
+                "fm_text": fm_text,
+                "body": body,
+                "meta": {"type": "fact", "path": r, "entity": ent, "predicate": fm["predicate"], "value": fm.get("value")},
+                "line": f"[fact] {ent}/{fm['predicate']} = {render_scalar_inline(fm.get('value'))}  [{r}]",
+            })
 
     if "skill" in allowed_types:
         for p, fm, body in scan_records(root, "knowledge/skills", "skill"):
@@ -409,11 +525,16 @@ def query_search(
                 continue
             r = rel_path(p, root)
             sk_ents = set(fm.get("entities") or [])
-            fm_text = f"{fm.get('slug')} {fm.get('title')} {fm.get('domain')} {' '.join(str(t) for t in (fm.get('triggers') or []))}"
-            rank = 0 if (sk_ents & resolved_entities) else (1 if (needle and needle in fold_text(fm_text)) else (2 if (needle and needle in fold_text(body)) else None))
-            if rank is not None:
-                line = f"[skill] {fm['slug']} — {fm['title']}  [{r}]"
-                scored.append((rank, r, {"type": "skill", "path": r, "slug": fm["slug"], "title": fm["title"]}, line))
+            fm_text = f"{fm.get('slug')} {fm.get('title')} {fm.get('domain')} {' '.join(str(t) for t in (fm.get('triggers') or []))} {' '.join(str(x) for x in (fm.get('outputs') or []))}"
+            corpus.append({
+                "path": r,
+                "entity_exact": bool(sk_ents & resolved_entities),
+                "entity_partial": bool(sk_ents & token_resolved_entities),
+                "fm_text": fm_text,
+                "body": body,
+                "meta": {"type": "skill", "path": r, "slug": fm["slug"], "title": fm["title"]},
+                "line": f"[skill] {fm['slug']} — {fm['title']}  [{r}]",
+            })
 
     if "guidance" in allowed_types:
         for p, fm, body in scan_records(root, "knowledge/guidance", "guidance"):
@@ -422,10 +543,15 @@ def query_search(
             r = rel_path(p, root)
             gd_ents = set(fm.get("entities") or [])
             fm_text = f"{fm.get('slug')} {fm.get('title')} {fm.get('domain')} {fm.get('policy_rule')}"
-            rank = 0 if (gd_ents & resolved_entities) else (1 if (needle and needle in fold_text(fm_text)) else (2 if (needle and needle in fold_text(body)) else None))
-            if rank is not None:
-                line = f"[guidance] {fm['slug']} — {fm['policy_rule']}  [{r}]"
-                scored.append((rank, r, {"type": "guidance", "path": r, "slug": fm["slug"], "title": fm["title"]}, line))
+            corpus.append({
+                "path": r,
+                "entity_exact": bool(gd_ents & resolved_entities),
+                "entity_partial": bool(gd_ents & token_resolved_entities),
+                "fm_text": fm_text,
+                "body": body,
+                "meta": {"type": "guidance", "path": r, "slug": fm["slug"], "title": fm["title"]},
+                "line": f"[guidance] {fm['slug']} — {fm['policy_rule']}  [{r}]",
+            })
 
     if "decision" in allowed_types:
         for p, fm, body in scan_records(root, "knowledge/decisions", "decision"):
@@ -434,31 +560,189 @@ def query_search(
             r = rel_path(p, root)
             dc_ents = set(fm.get("entities") or [])
             fm_text = f"{fm.get('id')} {fm.get('title')} {fm.get('domain')} {fm.get('summary')}"
-            rank = 0 if (dc_ents & resolved_entities) else (1 if (needle and needle in fold_text(fm_text)) else (2 if (needle and needle in fold_text(body)) else None))
-            if rank is not None:
-                line = f"[decision] {fm['id']} — {fm['title']}  [{r}]"
-                scored.append((rank, r, {"type": "decision", "path": r, "id": fm["id"], "title": fm["title"]}, line))
+            corpus.append({
+                "path": r,
+                "entity_exact": bool(dc_ents & resolved_entities),
+                "entity_partial": bool(dc_ents & token_resolved_entities),
+                "fm_text": fm_text,
+                "body": body,
+                "meta": {"type": "decision", "path": r, "id": fm["id"], "title": fm["title"]},
+                "line": f"[decision] {fm['id']} — {fm['title']}  [{r}]",
+            })
 
-    scored.sort(key=lambda item: (item[0], item[1]))
+    if "note" in allowed_types:
+        for p, fm, body in scan_records(root, "knowledge/notes", "note"):
+            r = rel_path(p, root)
+            nt_ents = set(fm.get("entities") or [])
+            fm_text = f"{fm.get('id', p.stem)} {fm.get('title', p.stem)} {fm.get('kind', '')} {' '.join(str(t) for t in (fm.get('tags') or []))}"
+            corpus.append({
+                "path": r,
+                "entity_exact": bool(nt_ents & resolved_entities),
+                "entity_partial": bool(nt_ents & token_resolved_entities),
+                "fm_text": fm_text,
+                "body": body,
+                "meta": {"type": "note", "path": r, "title": fm.get("title", p.stem)},
+                "line": f"[note] {fm.get('title', p.stem)}  [{r}]",
+            })
+
+    if "source" in allowed_types:
+        src_dir = root / "sources"
+        if src_dir.is_dir():
+            for p in sorted(src_dir.rglob("*.md")):
+                if p.name.lower() == "readme.md":
+                    continue
+                r = rel_path(p, root)
+                body = p.read_text(encoding="utf-8", errors="replace")
+                corpus.append({
+                    "path": r,
+                    "entity_exact": False,
+                    "entity_partial": False,
+                    "fm_text": p.stem.replace("-", " "),
+                    "body": body,
+                    "meta": {"type": "source", "path": r, "title": p.stem},
+                    "line": f"[source] {p.stem}  [{r}]",
+                })
+
+    fm_token_lists = [tokenize_stemmed(c["fm_text"]) for c in corpus]
+    body_token_lists = [tokenize_stemmed(c["body"]) for c in corpus]
+    fm_bm25 = _bm25_scores(q_tokens, fm_token_lists)
+    body_bm25 = _bm25_scores(q_tokens, body_token_lists)
+
+    unique_q = list(dict.fromkeys(q_tokens))
+    scored: list[tuple[int, float, str, dict[str, Any], str]] = []
+    for idx, c in enumerate(corpus):
+        folded_fm = fold_text(c["fm_text"])
+        folded_body = fold_text(c["body"])
+        doc_tok_set = set(fm_token_lists[idx]) | set(body_token_lists[idx])
+        matched_q = sum(1 for t in unique_q if t in doc_tok_set)
+        all_matched = bool(unique_q) and matched_q == len(unique_q)
+
+        # Tier preserves deterministic precedence for exact entity & phrase hits while enabling BM25 multi-term ranking
+        exact_phrase_fm = needle in folded_fm
+        exact_phrase_body = needle in folded_body
+        bm25_total = 2.2 * fm_bm25[idx] + 1.0 * body_bm25[idx]
+
+        tier: int | None = None
+        if c["entity_exact"]:
+            tier = 0
+        elif exact_phrase_fm:
+            tier = 1
+        elif all_matched and c["entity_partial"]:
+            tier = 1
+            bm25_total += 4.0
+        elif all_matched:
+            tier = 2
+            bm25_total += 3.0
+        elif exact_phrase_body:
+            tier = 2
+        elif len(unique_q) > 1 and matched_q >= max(2, math.ceil(len(unique_q) * 0.6)):
+            tier = 3
+
+        if tier is not None:
+            meta = dict(c["meta"], score=round(bm25_total, 4))
+            scored.append((tier, -bm25_total, c["path"], meta, c["line"]))
+
+    scored.sort(key=lambda item: (item[0], item[1], item[2]))
+    if limit is not None and limit > 0:
+        scored = scored[:limit]
     if not scored:
         return f"No records found matching {term!r}\n", [], diags
-    return "\n".join(item[3] for item in scored) + "\n", [item[2] for item in scored], diags
+    return "\n".join(item[4] for item in scored) + "\n", [item[3] for item in scored], diags
 
 
-def query_graph(root: Path, node: str) -> tuple[str, list[dict[str, str]], list[str]]:
+def query_graph(
+    root: Path,
+    node: str,
+    *,
+    depth: int = 1,
+    target_node: str | None = None,
+    as_of: str | None = None,
+) -> tuple[str, list[dict[str, Any]], list[str]]:
     diags = _warn_if_index_stale(root, "_generated/indexes/graph.md")
     resolved = resolve_entity(root, node)
     canonical_node = resolved[0] if len(resolved) == 1 else node
-    edges = compute_graph_edges(root)
-    neighbors: list[dict[str, str]] = []
-    lines: list[str] = []
+    as_of_date = parse_date(as_of) if as_of else None
+    edges = compute_graph_edges(root, as_of=as_of_date)
+    max_depth = max(1, int(depth))
+
+    if target_node:
+        t_res = resolve_entity(root, target_node)
+        canonical_target = t_res[0] if len(t_res) == 1 else target_node
+        adj: dict[str, list[tuple[str, str, str, str, str]]] = {}
+        for src, rel_name, dst, ev in edges:
+            adj.setdefault(src, []).append((dst, src, rel_name, dst, ev))
+            adj.setdefault(dst, []).append((src, src, rel_name, dst, ev))
+        queue: deque[tuple[str, list[tuple[str, str, str, str]]]] = deque([(canonical_node, [])])
+        visited = {canonical_node}
+        found_path: list[tuple[str, str, str, str]] | None = None
+        while queue:
+            curr, path = queue.popleft()
+            if curr == canonical_target and path:
+                found_path = path
+                break
+            if len(path) >= max_depth:
+                continue
+            for nxt, esrc, erel, edst, eev in adj.get(curr, []):
+                if nxt not in visited:
+                    visited.add(nxt)
+                    queue.append((nxt, [*path, (esrc, erel, edst, eev)]))
+        if not found_path:
+            return f"No path found between {canonical_node!r} and {canonical_target!r} within depth {max_depth}\n", [], diags
+        out_edges: list[dict[str, Any]] = []
+        lines: list[str] = []
+        for hop, (src, rel_name, dst, ev) in enumerate(found_path, 1):
+            out_edges.append({"hop": hop, "from": src, "relation": rel_name, "to": dst, "evidence": ev})
+            lines.append(f"[hop {hop}] {src} --[{rel_name}]--> {dst}  [{ev}]")
+        return "\n".join(lines) + "\n", out_edges, diags
+
+    # Single-hop or multi-hop BFS neighborhood
+    if max_depth == 1:
+        neighbors: list[dict[str, Any]] = []
+        lines = []
+        for src, rel_name, dst, ev in edges:
+            if src == canonical_node:
+                neighbors.append({"direction": "out", "relation": rel_name, "neighbor": dst, "evidence": ev, "hop": 1, "from": src, "to": dst})
+                lines.append(f"{src} --[{rel_name}]--> {dst}  [{ev}]")
+            elif dst == canonical_node:
+                neighbors.append({"direction": "in", "relation": rel_name, "neighbor": src, "evidence": ev, "hop": 1, "from": src, "to": dst})
+                lines.append(f"{src} --[{rel_name}]--> {dst}  [{ev}]")
+        if not lines:
+            return f"No graph relationships found for {canonical_node!r}\n", [], diags
+        return "\n".join(lines) + "\n", neighbors, diags
+
+    adj_multi: dict[str, list[tuple[str, str, str, str, str]]] = {}
     for src, rel_name, dst, ev in edges:
-        if src == canonical_node:
-            neighbors.append({"direction": "out", "relation": rel_name, "neighbor": dst, "evidence": ev})
-            lines.append(f"{src} --[{rel_name}]--> {dst}  [{ev}]")
-        elif dst == canonical_node:
-            neighbors.append({"direction": "in", "relation": rel_name, "neighbor": src, "evidence": ev})
-            lines.append(f"{src} --[{rel_name}]--> {dst}  [{ev}]")
+        adj_multi.setdefault(src, []).append((dst, src, rel_name, dst, ev))
+        adj_multi.setdefault(dst, []).append((src, src, rel_name, dst, ev))
+    frontier = {canonical_node}
+    seen_nodes = {canonical_node}
+    seen_edges: set[tuple[str, str, str, str]] = set()
+    collected: list[dict[str, Any]] = []
+    lines = []
+    for hop in range(1, max_depth + 1):
+        next_frontier: set[str] = set()
+        for curr in sorted(frontier):
+            for nxt, src, rel_name, dst, ev in adj_multi.get(curr, []):
+                ekey = (src, rel_name, dst, ev)
+                if ekey not in seen_edges:
+                    seen_edges.add(ekey)
+                    direction = "out" if src == curr else "in"
+                    collected.append({
+                        "hop": hop,
+                        "direction": direction,
+                        "relation": rel_name,
+                        "neighbor": nxt,
+                        "from": src,
+                        "to": dst,
+                        "evidence": ev,
+                    })
+                    lines.append(f"[hop {hop}] {src} --[{rel_name}]--> {dst}  [{ev}]")
+                if nxt not in seen_nodes:
+                    seen_nodes.add(nxt)
+                    next_frontier.add(nxt)
+        frontier = next_frontier
+        if not frontier:
+            break
     if not lines:
         return f"No graph relationships found for {canonical_node!r}\n", [], diags
-    return "\n".join(lines) + "\n", neighbors, diags
+    return "\n".join(lines) + "\n", collected, diags

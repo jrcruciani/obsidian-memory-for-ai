@@ -1,8 +1,8 @@
-# Obsidian Memory for AI — v5.0: The Knowledge Factory Reboot
+# Obsidian Memory for AI — v5.1: Knowledge Factory & Personal Memory Mode
 
-**Turn a plain Markdown Obsidian vault into a governed, offline Knowledge Factory where AI agents capture gaps, curate evidence into proposals, review changes, and consume living facts, skills, and guidance.**
+**Turn a plain Markdown Obsidian vault into a governed, offline Knowledge Factory and personal AI memory — with 1-command personal capture, BM25 + disposable SQLite FTS5/embedding hybrid search, Google OKF v0.2 interop, Sleep-Time curation, and a zero-dependency stdio MCP server.**
 
-> **Current protocol:** **v5.0 — The Knowledge Factory (`SPEC-v5.0.md`)**
+> **Current release:** **v5.1 — Knowledge Factory + Personal Memory Mode** (`SPEC-v5.0.md` + [`docs/personal-mode.md`](docs/personal-mode.md))
 > **Reference vault:** [`examples/v5-knowledge-factory/`](examples/v5-knowledge-factory/)
 > **Migrating from v4.0 / v4.1?** Run `python3 tools/kf.py migrate` — see [`docs/migration-from-v4.1.md`](docs/migration-from-v4.1.md).
 
@@ -71,8 +71,23 @@ KF_TODAY=2026-10-15 python3 tools/kf.py query why skill xrf-pigment-scan
 KF_TODAY=2026-10-15 python3 tools/kf.py query search "Voss"
 KF_TODAY=2026-10-15 python3 tools/kf.py query graph concordance
 
-# 4. Initialize a brand-new vault anywhere
+# 4. Initialize a brand-new vault anywhere (standard multi-role or fast-track personal mode)
 python3 tools/kf.py init ~/MyKnowledgeFactory
+python3 tools/kf.py init ~/MyPersonalMemory --profile personal
+```
+
+### Personal Memory Quick Start (`--profile personal`)
+
+```bash
+cd ~/MyPersonalMemory
+python3 tools/kf.py remember --entity me --predicate city --value "Madrid" --pinned --entity-kind person
+python3 tools/kf.py note --slug ai-memory --title "AI Memory" --body "Testing hybrid FTS5 search." --entities me
+python3 tools/kf.py index build                        # Disposable SQLite FTS5 (+ optional --embeddings via Ollama)
+python3 tools/kf.py query search "madrid memory" --hybrid
+python3 tools/kf.py bootstrap --profile personal --max-tokens 1200
+python3 tools/kf.py curate sleep-pack --emit-signals   # Prompt-injection-hardened offline curation bundle
+python3 tools/kf.py export-okf ./okf-export            # Google Open Knowledge Format v0.2 export
+python3 tools/kf_mcp.py --vault .                      # Zero-dependency stdio MCP server
 ```
 
 ---
@@ -109,6 +124,7 @@ Every command accepts `--json` for structured machine consumption.
 
 | Topic | Document |
 |---|---|
+| Personal Memory Mode, Hybrid Search, OKF v0.2 & MCP | [`docs/personal-mode.md`](docs/personal-mode.md) |
 | Normative v5.0 protocol contract | [`SPEC-v5.0.md`](SPEC-v5.0.md) |
 | Architecture manifesto & retired legacy concepts | [`docs/architecture.md`](docs/architecture.md) |
 | Executor vs. Curator vs. Reviewer operating guide | [`docs/executor-and-curator.md`](docs/executor-and-curator.md) |

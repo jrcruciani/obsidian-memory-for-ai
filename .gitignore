@@ -4,3 +4,5 @@
 __pycache__/
 *.pyc
 factory/_staging/
+_generated/indexes/search.sqlite
+_generated/indexes/search.sqlite-*

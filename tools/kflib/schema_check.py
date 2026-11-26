@@ -96,7 +96,13 @@ def _load_type_schemas(root: Path) -> tuple[dict[str, dict[str, Any]], list[Find
     return loaded, findings
 
 
-def _validate_against_schema(rel: str, fm: dict[str, Any], schema: dict[str, Any]) -> list[Finding]:
+def _validate_against_schema(
+    rel: str,
+    fm: dict[str, Any],
+    schema: dict[str, Any],
+    *,
+    forgiving: bool = False,
+) -> list[Finding]:
     findings: list[Finding] = []
     required = schema.get("required", [])
     fields = schema.get("fields", {})
@@ -105,7 +111,8 @@ def _validate_against_schema(rel: str, fm: dict[str, Any], schema: dict[str, Any
             findings.append(Finding("ERROR", rel, f"missing required field '{req}'"))
     for key, val in fm.items():
         if key not in fields:
-            findings.append(Finding("ERROR", rel, f"unknown frontmatter field '{key}' for type '{schema.get('type')}'"))
+            sev = "WARN" if forgiving else "ERROR"
+            findings.append(Finding(sev, rel, f"unknown frontmatter field '{key}' for type '{schema.get('type')}'"))
             continue
         spec = fields[key]
         if val is None:
@@ -142,6 +149,8 @@ def lint_vault(
     strict: bool = False,
     check_stale: bool = False,
     check_generated: bool = False,
+    sources_root: Path | None = None,
+    forgiving: bool = False,
 ) -> list[Finding]:
     findings: list[Finding] = []
 
@@ -238,7 +247,8 @@ def lint_vault(
             findings.append(Finding("ERROR", "knowledge/entities.md", str(exc)))
 
     predicates = load_predicates(root)
-    if not predicates:
+    allow_custom_predicates = bool((manifest.get("settings") or {}).get("allow_custom_predicates", False))
+    if not predicates and not allow_custom_predicates:
         findings.append(Finding("ERROR", "factory/schema/predicates.yaml", "predicates.yaml must declare at least one predicate"))
 
     policy = load_policy(root)
@@ -277,10 +287,12 @@ def lint_vault(
     known_link_targets: set[str] = set()
     by_stem: dict[str, list[str]] = defaultdict(list)
 
-    for p in sorted((root / "sources").rglob("*.md")) if (root / "sources").exists() else []:
-        r = rel_path(p, root)
-        known_link_targets.update((r, r.removesuffix(".md")))
-        by_stem[p.stem].append(r)
+    src_root = sources_root or root
+    for base in (root, src_root) if src_root != root else (root,):
+        for p in sorted((base / "sources").rglob("*.md")) if (base / "sources").exists() else []:
+            r = rel_path(p, base)
+            known_link_targets.update((r, r.removesuffix(".md")))
+            by_stem[p.stem].append(r)
 
     facts_by_slot: dict[tuple[str, str], list[tuple[Path, str, dict[str, Any]]]] = defaultdict(list)
     skills_by_slug: dict[str, list[tuple[Path, str, dict[str, Any]]]] = defaultdict(list)
@@ -316,7 +328,7 @@ def lint_vault(
         if not isinstance(rtype, str) or rtype not in type_schemas:
             findings.append(Finding("ERROR", r, f"unknown or missing record type {rtype!r}"))
             continue
-        findings.extend(_validate_against_schema(r, fm, type_schemas[rtype]))
+        findings.extend(_validate_against_schema(r, fm, type_schemas[rtype], forgiving=forgiving))
 
         rec_id = fm.get("id")
         if isinstance(rec_id, str):
@@ -338,7 +350,7 @@ def lint_vault(
                 findings.append(Finding("ERROR", r, f"unknown entity '{ent}' (declare in knowledge/entities.md)"))
             if not valid_pred:
                 findings.append(Finding("ERROR", r, f"fact predicate {pred!r} must match {SLUG_RE.pattern}"))
-            elif pred not in predicates:
+            elif pred not in predicates and not allow_custom_predicates:
                 findings.append(Finding("ERROR", r, f"unknown predicate '{pred}' (declare in factory/schema/predicates.yaml)"))
             if valid_ent and valid_pred:
                 assert isinstance(ent, str) and isinstance(pred, str)
@@ -379,21 +391,21 @@ def lint_vault(
                 findings.append(Finding("WARN", r, "inferred fact should cite derived_from evidence"))
             if fm.get("trust") == "external" and fm.get("confidence") is None:
                 findings.append(Finding("WARN", r, "external fact should specify numeric confidence"))
-            _check_evidence_paths(root, r, fm.get("derived_from", []), findings, ("knowledge/events/", "knowledge/decisions/", "factory/signals/", "sources/"))
+            _check_evidence_paths(root, r, fm.get("derived_from", []), findings, ("knowledge/events/", "knowledge/decisions/", "factory/signals/", "sources/"), sources_root=sources_root)
             _check_supersedes_chain(root, p, r, fm, "knowledge/facts/", findings, match_keys=("entity", "predicate"))
 
         elif rtype == "event":
             for ent in fm.get("entities", []) or []:
                 if ent not in entities:
                     findings.append(Finding("ERROR", r, f"event references unknown entity '{ent}'"))
-            _check_evidence_paths(root, r, fm.get("sources", []), findings, ("sources/",))
+            _check_evidence_paths(root, r, fm.get("sources", []), findings, ("sources/",), sources_root=sources_root)
             for claim in fm.get("asserts", []) or []:
                 if not isinstance(claim, dict) or not {"entity", "predicate", "value"} <= claim.keys():
                     findings.append(Finding("ERROR", r, "event asserts items must contain entity, predicate, value"))
                 else:
                     if claim["entity"] not in entities:
                         findings.append(Finding("ERROR", r, f"event asserts unknown entity '{claim['entity']}'"))
-                    if claim["predicate"] not in predicates:
+                    if claim["predicate"] not in predicates and not allow_custom_predicates:
                         findings.append(Finding("ERROR", r, f"event asserts unknown predicate '{claim['predicate']}'"))
 
         elif rtype == "skill":
@@ -430,7 +442,7 @@ def lint_vault(
             for ent in fm.get("entities", []) or []:
                 if ent not in entities:
                     findings.append(Finding("ERROR", r, f"skill references unknown entity '{ent}'"))
-            _check_evidence_paths(root, r, fm.get("derived_from", []), findings, ("knowledge/events/", "knowledge/decisions/", "factory/signals/", "sources/"))
+            _check_evidence_paths(root, r, fm.get("derived_from", []), findings, ("knowledge/events/", "knowledge/decisions/", "factory/signals/", "sources/"), sources_root=sources_root)
             _check_supersedes_chain(root, p, r, fm, "knowledge/skills/", findings, match_keys=("slug",))
 
         elif rtype == "guidance":
@@ -456,7 +468,7 @@ def lint_vault(
             for ent in fm.get("entities", []) or []:
                 if ent not in entities:
                     findings.append(Finding("ERROR", r, f"guidance references unknown entity '{ent}'"))
-            _check_evidence_paths(root, r, fm.get("derived_from", []), findings, ("knowledge/events/", "knowledge/decisions/", "factory/signals/", "sources/"))
+            _check_evidence_paths(root, r, fm.get("derived_from", []), findings, ("knowledge/events/", "knowledge/decisions/", "factory/signals/", "sources/"), sources_root=sources_root)
             _check_supersedes_chain(root, p, r, fm, "knowledge/guidance/", findings, match_keys=("slug",))
 
         elif rtype == "decision":
@@ -490,7 +502,7 @@ def lint_vault(
             for ent in fm.get("entities", []) or []:
                 if ent not in entities:
                     findings.append(Finding("ERROR", r, f"decision references unknown entity '{ent}'"))
-            _check_evidence_paths(root, r, fm.get("derived_from", []), findings, ("knowledge/events/", "knowledge/decisions/", "factory/proposals/", "factory/signals/", "sources/"))
+            _check_evidence_paths(root, r, fm.get("derived_from", []), findings, ("knowledge/events/", "knowledge/decisions/", "factory/proposals/", "factory/signals/", "sources/"), sources_root=sources_root)
             if isinstance(fm.get("derived_from"), list) and r in fm["derived_from"]:
                 findings.append(Finding("ERROR", r, "decision cannot cite itself in derived_from"))
             _check_supersedes_chain(root, p, r, fm, "knowledge/decisions/", findings, match_keys=(), decision_family=family)
@@ -499,7 +511,7 @@ def lint_vault(
             for ent in fm.get("entities", []) or []:
                 if ent not in entities:
                     findings.append(Finding("ERROR", r, f"signal references unknown entity '{ent}'"))
-            _check_evidence_paths(root, r, fm.get("evidence", []), findings, ("knowledge/events/", "sources/"))
+            _check_evidence_paths(root, r, fm.get("evidence", []), findings, ("knowledge/events/", "sources/"), sources_root=sources_root)
             if fm.get("status") in {"resolved", "dismissed"}:
                 if not fm.get("resolved_at"):
                     findings.append(Finding("ERROR", r, f"{fm.get('status')} signal requires resolved_at"))
@@ -649,6 +661,8 @@ def _check_evidence_paths(
     paths: Any,
     findings: list[Finding],
     prefixes: tuple[str, ...],
+    *,
+    sources_root: Path | None = None,
 ) -> None:
     if not isinstance(paths, list):
         return
@@ -656,6 +670,10 @@ def _check_evidence_paths(
         try:
             target = safe_path(root, ref, prefixes)
             if not target.is_file():
+                if sources_root is not None and isinstance(ref, str) and ref.startswith("sources/"):
+                    alt = safe_path(sources_root, ref, prefixes)
+                    if alt.is_file():
+                        continue
                 findings.append(Finding("ERROR", rel, f"referenced evidence file does not exist: {ref}"))
         except ValueError as exc:
             findings.append(Finding("ERROR", rel, str(exc)))
