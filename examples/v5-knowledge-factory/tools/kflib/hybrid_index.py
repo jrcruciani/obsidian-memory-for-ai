@@ -7,6 +7,7 @@ source; deleting ``search.sqlite`` loses zero canonical data.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import os
@@ -20,7 +21,6 @@ from typing import Any, Callable
 from .bootstrap import render_scalar_inline
 from .locking import vault_write_lock
 from .model import (
-    canonical_source_digest,
     fold_text,
     is_active_head,
     is_fact_visible,
@@ -30,7 +30,7 @@ from .model import (
     scan_records,
     today,
 )
-from .query import _stem_token, tokenize_text
+from .query import _stem_token, query_search, tokenize_text
 
 EmbedFn = Callable[[str], list[float]]
 INDEX_REL = "_generated/indexes/search.sqlite"
@@ -223,6 +223,62 @@ def _collect_indexable_documents(
     return docs
 
 
+def hybrid_index_digest(
+    root: Path,
+    *,
+    include_notes: bool = True,
+    include_sources: bool = True,
+    include_events: bool = True,
+) -> str:
+    """Compute a fast, date-independent digest for `search.sqlite` staleness detection.
+
+    Uses file metadata ``(rel_path, size, mtime_ns)`` on indexable Markdown files
+    only (never reading binary files in ``sources/``) plus active temporal fact
+    visibility, avoiding unnecessary midnight rebuilds when no fact boundary changed.
+    """
+    hasher = hashlib.sha256()
+    hasher.update(f"kf-hybrid-v5.1.1:{int(include_notes)}:{int(include_sources)}:{int(include_events)}\n".encode("utf-8"))
+    ref = today()
+
+    # Entities registry + living Markdown planes
+    ent_path = root / "knowledge/entities.md"
+    if ent_path.is_file():
+        st = ent_path.stat()
+        hasher.update(f"knowledge/entities.md:{st.st_size}:{st.st_mtime_ns}\n".encode("utf-8"))
+
+    folders = ["knowledge/facts", "knowledge/skills", "knowledge/guidance", "knowledge/decisions"]
+    if include_events:
+        folders.append("knowledge/events")
+    if include_notes:
+        folders.append("knowledge/notes")
+
+    for folder in folders:
+        base = root / folder
+        if not base.is_dir():
+            continue
+        for p in sorted(base.rglob("*.md")):
+            if p.name.startswith("."):
+                continue
+            st = p.stat()
+            hasher.update(f"{rel_path(p, root)}:{st.st_size}:{st.st_mtime_ns}\n".encode("utf-8"))
+
+    # Capture active fact visibility set so expiring/activating facts invalidate the index on boundary dates
+    for p, fm, _ in scan_records(root, "knowledge/facts", "fact"):
+        if is_fact_visible(fm, ref):
+            hasher.update(f"visible-fact:{rel_path(p, root)}\n".encode("utf-8"))
+
+    if include_sources:
+        src_dir = root / "sources"
+        if src_dir.is_dir():
+            for p in sorted(src_dir.rglob("*.md")):
+                if p.name.startswith(".") or p.name.lower() == "readme.md":
+                    continue
+                st = p.stat()
+                hasher.update(f"{rel_path(p, root)}:{st.st_size}:{st.st_mtime_ns}\n".encode("utf-8"))
+
+    return "sha256:" + hasher.hexdigest()
+
+
 def build_hybrid_index(
     root: Path,
     *,
@@ -235,7 +291,12 @@ def build_hybrid_index(
     """Build disposable SQLite FTS5 (+ optional embedding) index under `_generated/indexes/`."""
     with vault_write_lock(root):
         ref = today()
-        digest = canonical_source_digest(root, ref)
+        digest = hybrid_index_digest(
+            root,
+            include_notes=include_notes,
+            include_sources=include_sources,
+            include_events=include_events,
+        )
         docs = _collect_indexable_documents(
             root,
             include_notes=include_notes,
@@ -358,16 +419,19 @@ def hybrid_search(
     term: str,
     *,
     types: set[str] | None = None,
+    include_notes: bool = True,
+    include_sources: bool = True,
     use_embeddings: bool = False,
     embed_fn: EmbedFn | None = None,
     auto_build: bool = True,
+    fallback_bm25: bool = False,
     limit: int = 10,
     rrf_k: int = 60,
 ) -> tuple[str, list[dict[str, Any]], list[str]]:
     """Query the disposable SQLite FTS5 + embedding index using Reciprocal Rank Fusion."""
     diags: list[str] = []
     db_path = root / INDEX_REL
-    current_digest = canonical_source_digest(root)
+    current_digest = hybrid_index_digest(root)
 
     needs_build = not db_path.is_file()
     if not needs_build:
@@ -376,7 +440,7 @@ def hybrid_search(
             row = conn_chk.execute("SELECT value FROM meta WHERE key='source_digest'").fetchone()
             conn_chk.close()
             if not row or row[0] != current_digest:
-                if auto_build:
+                if auto_build or fallback_bm25:
                     needs_build = True
                 else:
                     diags.append(f"WARN: {INDEX_REL} is stale (run `kf.py index build`)")
@@ -387,10 +451,32 @@ def hybrid_search(
         if auto_build:
             info = build_hybrid_index(root, use_embeddings=use_embeddings, embed_fn=embed_fn)
             diags.extend(info.get("warnings") or [])
+        elif fallback_bm25:
+            txt, rows, bm25_diags = query_search(
+                root,
+                term,
+                types=types,
+                include_notes=include_notes,
+                include_sources=include_sources,
+                limit=limit,
+            )
+            diags.extend(bm25_diags)
+            return txt, rows, diags
         else:
             return f"Hybrid index missing at {INDEX_REL}; run `kf.py index build`.\n", [], diags
 
-    allowed_types = set(types) if types is not None else None
+    if types is not None:
+        allowed_types: set[str] = set(types)
+    else:
+        allowed_types = {"fact", "skill", "guidance", "decision", "event"}
+        if include_notes:
+            allowed_types.add("note")
+        if include_sources:
+            allowed_types.add("source")
+    if not include_notes:
+        allowed_types.discard("note")
+    if not include_sources:
+        allowed_types.discard("source")
     resolved_entities = set(resolve_entity(root, term))
     for tok in tokenize_text(term):
         if len(tok) >= 3:

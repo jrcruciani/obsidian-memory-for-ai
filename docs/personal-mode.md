@@ -87,11 +87,34 @@ Connect any MCP host (Hermes, Claude Desktop, Cursor) with zero external package
   "mcpServers": {
     "obsidian-memory": {
       "command": "python3",
-      "args": ["/path/to/vault/tools/kf_mcp.py", "--vault", "/path/to/vault"]
+      "args": [
+        "/path/to/vault/tools/kf_mcp.py",
+        "--vault", "/path/to/vault",
+        "--actor", "agent-owner-00000001"
+      ]
     }
   }
 }
 ```
 
-- **Tools (12):** `kf_bootstrap`, `kf_search`, `kf_remember`, `kf_forget`, `kf_note`, `kf_capture_signal`, `kf_query_facts`, `kf_query_skills`, `kf_query_guidance`, `kf_query_why`, `kf_query_graph`, `kf_sleep_pack`.
+For read-only profiles or untrusted/secondary agents, enable **`--read-only`** (hides/blocks all write tools, forces `emit_signals=false`, and falls back to BM25 without creating or modifying `search.sqlite` or `.kf.lock`):
+
+```json
+{
+  "mcpServers": {
+    "obsidian-memory-ro": {
+      "command": "python3",
+      "args": [
+        "/path/to/vault/tools/kf_mcp.py",
+        "--vault", "/path/to/vault",
+        "--read-only"
+      ]
+    }
+  }
+}
+```
+
+- **Security flags:** `--read-only`, `--actor <agent-id>` (`KF_MCP_ACTOR`), `--default-trust owner|agent` (`KF_MCP_TRUST`), `--no-auto-build`.
+- **Privacy filtering:** `kf_search` strictly enforces `include_notes` (default `true`) and `include_sources` (default `false`) in both BM25 and `--hybrid` modes.
+- **Tools (12 full / 8 read-only):** `kf_bootstrap`, `kf_search`, `kf_remember`, `kf_forget`, `kf_note`, `kf_capture_signal`, `kf_query_facts`, `kf_query_skills`, `kf_query_guidance`, `kf_query_why`, `kf_query_graph`, `kf_sleep_pack`.
 - **Resources (4):** `kf://dashboard`, `kf://bootstrap/personal`, `kf://catalog`, `kf://factory-queue`.

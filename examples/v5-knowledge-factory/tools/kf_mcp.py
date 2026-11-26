@@ -5,14 +5,23 @@ Exposes personal memory tools and views over JSON-RPC 2.0 stdio so Hermes,
 Claude Desktop, Cursor, or any MCP host can read/search/remember against a
 plain-Markdown Obsidian vault without external packages or background daemons.
 
+Security flags (v5.1.1):
+    --read-only      Strictly disable all write tools, block sqlite auto-build,
+                     and force sleep-pack emit_signals=False (zero disk writes).
+    --actor ID       Bind a specific Knowledge Factory agent ID (or env KF_MCP_ACTOR)
+                     so policy.yaml role separation applies per host/profile.
+    --default-trust  Default trust level for kf_remember ('owner' or 'agent'; env KF_MCP_TRUST).
+    --no-auto-build  Disable automatic search.sqlite rebuilds during kf_search.
+
 Usage:
-    python3 tools/kf_mcp.py --vault /path/to/my-memory-vault
+    python3 tools/kf_mcp.py --vault /path/to/my-memory-vault [--read-only] [--actor agent-executor-00000004]
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 from typing import Any
@@ -21,7 +30,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from kflib import SPEC_VERSION  # noqa: E402
 from kflib.bootstrap import build_bootstrap_with_meta  # noqa: E402
-from kflib.capture import capture_event, capture_signal  # noqa: E402
+from kflib.capture import capture_signal  # noqa: E402
 from kflib.curate import build_sleep_curation_pack  # noqa: E402
 from kflib.hybrid_index import hybrid_search  # noqa: E402
 from kflib.personal import default_personal_actor, forget_fact, remember_fact, write_note  # noqa: E402
@@ -35,7 +44,9 @@ from kflib.query import (  # noqa: E402
 )
 
 SERVER_NAME = "obsidian-memory-kf-personal"
-SERVER_VERSION = f"{SPEC_VERSION}-personal"
+SERVER_VERSION = f"{SPEC_VERSION}.1-personal"
+
+MUTATING_TOOLS = {"kf_remember", "kf_forget", "kf_note", "kf_capture_signal"}
 
 TOOLS: list[dict[str, Any]] = [
     {
@@ -63,6 +74,7 @@ TOOLS: list[dict[str, Any]] = [
                 "include_sources": {"type": "boolean", "default": False},
                 "types": {"type": "array", "items": {"type": "string"}},
                 "limit": {"type": "integer", "default": 10},
+                "auto_build": {"type": "boolean", "default": True},
             },
             "required": ["query"],
         },
@@ -78,7 +90,7 @@ TOOLS: list[dict[str, Any]] = [
                 "value": {},
                 "valid_from": {"type": "string"},
                 "pinned": {"type": "boolean", "default": False},
-                "trust": {"type": "string", "enum": ["owner", "agent"], "default": "owner"},
+                "trust": {"type": "string", "enum": ["owner", "agent"]},
                 "entity_kind": {"type": "string", "default": "concept"},
                 "entity_display": {"type": "string"},
                 "body": {"type": "string", "default": ""},
@@ -217,7 +229,25 @@ RESOURCES: list[dict[str, str]] = [
 ]
 
 
-def _call_tool(root: Path, name: str, args: dict[str, Any]) -> dict[str, Any]:
+def _effective_tools(read_only: bool) -> list[dict[str, Any]]:
+    if not read_only:
+        return TOOLS
+    return [t for t in TOOLS if t["name"] not in MUTATING_TOOLS]
+
+
+def _call_tool(
+    root: Path,
+    name: str,
+    args: dict[str, Any],
+    *,
+    read_only: bool = False,
+    actor: str | None = None,
+    default_trust: str = "owner",
+    allow_auto_build: bool = True,
+) -> dict[str, Any]:
+    if read_only and name in MUTATING_TOOLS:
+        raise PermissionError(f"MCP server is running in --read-only mode; tool {name!r} is disabled")
+
     if name == "kf_bootstrap":
         text, meta = build_bootstrap_with_meta(
             root,
@@ -230,12 +260,19 @@ def _call_tool(root: Path, name: str, args: dict[str, Any]) -> dict[str, Any]:
     if name == "kf_search":
         tset = set(args["types"]) if args.get("types") else None
         limit = int(args.get("limit", 10))
+        inc_notes = bool(args.get("include_notes", True))
+        inc_sources = bool(args.get("include_sources", False))
         if args.get("hybrid", True):
+            eff_auto_build = False if (read_only or not allow_auto_build) else bool(args.get("auto_build", True))
             text, rows, diags = hybrid_search(
                 root,
                 args["query"],
                 types=tset,
+                include_notes=inc_notes,
+                include_sources=inc_sources,
                 use_embeddings=bool(args.get("embeddings", False)),
+                auto_build=eff_auto_build,
+                fallback_bm25=not eff_auto_build,
                 limit=limit,
             )
         else:
@@ -243,13 +280,15 @@ def _call_tool(root: Path, name: str, args: dict[str, Any]) -> dict[str, Any]:
                 root,
                 args["query"],
                 types=tset,
-                include_notes=bool(args.get("include_notes", True)),
-                include_sources=bool(args.get("include_sources", False)),
+                include_notes=inc_notes,
+                include_sources=inc_sources,
                 limit=limit,
             )
         return {"text": text, "results": rows, "diagnostics": diags}
 
     if name == "kf_remember":
+        eff_actor = actor or default_personal_actor(root)
+        eff_trust = str(args.get("trust") or default_trust)
         return remember_fact(
             root,
             entity=args["entity"],
@@ -257,19 +296,22 @@ def _call_tool(root: Path, name: str, args: dict[str, Any]) -> dict[str, Any]:
             value=args["value"],
             valid_from=args.get("valid_from"),
             pinned=bool(args.get("pinned", False)),
-            trust=str(args.get("trust", "owner")),
+            trust=eff_trust,
             entity_kind=str(args.get("entity_kind", "concept")),
             entity_display=args.get("entity_display"),
             body=str(args.get("body", "")),
+            actor_id=eff_actor,
             rebuild=True,
         )
 
     if name == "kf_forget":
+        eff_actor = actor or default_personal_actor(root)
         return forget_fact(
             root,
             entity=args["entity"],
             predicate=args["predicate"],
             reason=args["reason"],
+            actor_id=eff_actor,
             rebuild=True,
         )
 
@@ -286,9 +328,10 @@ def _call_tool(root: Path, name: str, args: dict[str, Any]) -> dict[str, Any]:
         )
 
     if name == "kf_capture_signal":
+        eff_actor = actor or args.get("emitted_by") or default_personal_actor(root)
         return capture_signal(
             root,
-            emitted_by=args.get("emitted_by") or default_personal_actor(root),
+            emitted_by=eff_actor,
             kind=args["kind"],
             summary=args["summary"],
             severity=str(args.get("severity", "medium")),
@@ -335,9 +378,12 @@ def _call_tool(root: Path, name: str, args: dict[str, Any]) -> dict[str, Any]:
         return {"text": text, "relationships": rows, "diagnostics": diags}
 
     if name == "kf_sleep_pack":
+        eff_emit = False if read_only else bool(args.get("emit_signals", False))
+        eff_actor = actor or "agent-curator-00000003"
         return build_sleep_curation_pack(
             root,
-            emit_signals=bool(args.get("emit_signals", False)),
+            emit_signals=eff_emit,
+            emitted_by=eff_actor,
             max_sources=int(args.get("max_sources", 8)),
         )
 
@@ -362,7 +408,15 @@ def _read_resource(root: Path, uri: str) -> str:
     raise ValueError(f"unknown resource URI: {uri}")
 
 
-def handle_request(root: Path, req: dict[str, Any]) -> dict[str, Any] | None:
+def handle_request(
+    root: Path,
+    req: dict[str, Any],
+    *,
+    read_only: bool = False,
+    actor: str | None = None,
+    default_trust: str = "owner",
+    allow_auto_build: bool = True,
+) -> dict[str, Any] | None:
     method = req.get("method")
     req_id = req.get("id")
     params = req.get("params") or {}
@@ -380,11 +434,19 @@ def handle_request(root: Path, req: dict[str, Any]) -> dict[str, Any] | None:
         elif method == "ping":
             result = {}
         elif method == "tools/list":
-            result = {"tools": TOOLS}
+            result = {"tools": _effective_tools(read_only)}
         elif method == "tools/call":
             tname = str(params.get("name", ""))
             targs = params.get("arguments") or {}
-            payload = _call_tool(root, tname, targs)
+            payload = _call_tool(
+                root,
+                tname,
+                targs,
+                read_only=read_only,
+                actor=actor,
+                default_trust=default_trust,
+                allow_auto_build=allow_auto_build,
+            )
             result = {
                 "content": [{"type": "text", "text": json.dumps(payload, ensure_ascii=False)}],
                 "isError": False,
@@ -419,7 +481,14 @@ def handle_request(root: Path, req: dict[str, Any]) -> dict[str, Any] | None:
         }
 
 
-def serve_stdio(root: Path) -> int:
+def serve_stdio(
+    root: Path,
+    *,
+    read_only: bool = False,
+    actor: str | None = None,
+    default_trust: str = "owner",
+    allow_auto_build: bool = True,
+) -> int:
     for raw_line in sys.stdin:
         line = raw_line.strip()
         if not line:
@@ -431,7 +500,14 @@ def serve_stdio(root: Path) -> int:
             sys.stdout.write(json.dumps(resp, ensure_ascii=False) + "\n")
             sys.stdout.flush()
             continue
-        resp = handle_request(root, req)
+        resp = handle_request(
+            root,
+            req,
+            read_only=read_only,
+            actor=actor,
+            default_trust=default_trust,
+            allow_auto_build=allow_auto_build,
+        )
         if resp is not None:
             sys.stdout.write(json.dumps(resp, ensure_ascii=False) + "\n")
             sys.stdout.flush()
@@ -441,8 +517,23 @@ def serve_stdio(root: Path) -> int:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Knowledge Factory v5 Personal Memory stdio MCP Server")
     parser.add_argument("--vault", type=Path, default=Path.cwd(), help="Path to the Knowledge Factory vault")
+    parser.add_argument("--read-only", action="store_true", help="Disable all write tools and prevent search.sqlite auto-builds")
+    parser.add_argument("--actor", default=os.environ.get("KF_MCP_ACTOR"), help="Bind agent ID for writes/signals (or set KF_MCP_ACTOR)")
+    parser.add_argument(
+        "--default-trust",
+        default=os.environ.get("KF_MCP_TRUST", "owner"),
+        choices=["owner", "agent"],
+        help="Default trust level for kf_remember (owner or agent)",
+    )
+    parser.add_argument("--no-auto-build", action="store_true", help="Never auto-rebuild search.sqlite during kf_search")
     args = parser.parse_args(argv)
-    return serve_stdio(args.vault.resolve())
+    return serve_stdio(
+        args.vault.resolve(),
+        read_only=args.read_only,
+        actor=args.actor,
+        default_trust=args.default_trust,
+        allow_auto_build=not args.no_auto_build,
+    )
 
 
 if __name__ == "__main__":
