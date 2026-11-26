@@ -718,6 +718,8 @@ def dispatch(args: argparse.Namespace, root: Path, out: io.StringIO) -> tuple[in
                     root,
                     args.term,
                     types=tset,
+                    include_notes=args.include_notes or (tset is None),
+                    include_sources=args.include_sources,
                     use_embeddings=args.embeddings,
                     limit=args.limit or 10,
                 )

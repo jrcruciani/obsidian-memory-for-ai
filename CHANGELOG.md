@@ -1,5 +1,16 @@
 # Changelog
 
+## v5.1.1 - 2026-11-26
+
+**Security, Concurrency & I/O Hardening for Personal & Multi-Profile Deployments**
+
+- **True `--read-only` MCP server (`tools/kf_mcp.py`):** Excludes all mutating tools (`kf_remember`, `kf_forget`, `kf_note`, `kf_capture_signal`) from `tools/list`, rejects mutation calls, forces `emit_signals=False` in `kf_sleep_pack`, and disables `search.sqlite` auto-builds (falling back cleanly to in-memory BM25 so zero files or lockfiles are created on disk).
+- **Per-host/profile MCP identity (`--actor`, `--default-trust`, `KF_MCP_ACTOR`, `KF_MCP_TRUST`):** Propagates explicit agent IDs and trust defaults into `remember_fact`, `forget_fact`, and `capture_signal` so `policy.yaml` role boundaries apply per MCP client.
+- **Privacy-respecting hybrid search filters (`tools/kflib/hybrid_index.py`, `kf_mcp.py`, `kf.py`):** Strictly enforces `include_notes` and `include_sources` when `hybrid=True` (default `include_sources=False` in MCP never leaks `sources/` entries even when indexed in `search.sqlite`).
+- **Fast, date-independent hybrid index digest & streaming SHA-256 (`hybrid_index.py`, `model.py`):** `hybrid_index_digest()` uses `(path, size, mtime_ns)` on indexable Markdown files plus active fact visibility instead of reading binary `sources/` bytes or forcing daily midnight rebuilds; `canonical_source_digest()` now streams files in 64 KiB chunks to avoid RAM spikes on large attachments while producing byte-identical digests.
+- **Thread-safe re-entrant write lock (`tools/kflib/locking.py`):** Tracks lock ownership by `(vault_path, thread_id)` with `threading.Condition` timeouts so concurrent threads in the same process serialize properly alongside cross-process `flock`/`msvcrt.locking`.
+- **Hardening regression tests (`tests/test_personal_v511_hardening.py`):** Adds 5 TDD tests verifying every fix above (63/63 total unit tests passing).
+
 ## v5.1.0 - 2026-11-26
 
 **Personal Memory Mode, Hybrid Retrieval, Locking, OKF v0.2 Interop & Stdio MCP**

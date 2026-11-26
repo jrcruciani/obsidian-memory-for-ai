@@ -281,6 +281,17 @@ def scan_records(root: Path, rel_folder: str, record_type: str | None = None) ->
     return rows
 
 
+def _stream_file_sha256(path: Path) -> str:
+    h = hashlib.sha256()
+    with path.open("rb") as fh:
+        while True:
+            chunk = fh.read(65536)
+            if not chunk:
+                break
+            h.update(chunk)
+    return h.hexdigest()
+
+
 def canonical_source_digest(root: Path, ref_date: dt.date | None = None) -> str:
     """Compute a deterministic SHA-256 digest over all canonical truth & factory state."""
     date_val = (ref_date or today()).isoformat()
@@ -292,6 +303,6 @@ def canonical_source_digest(root: Path, ref_date: dt.date | None = None) -> str:
             continue
         for path in sorted(p for p in base.rglob("*") if p.is_file() and not p.name.startswith(".")):
             rel = rel_path(path, root)
-            digest = hashlib.sha256(path.read_bytes()).hexdigest()
+            digest = _stream_file_sha256(path)
             hasher.update(f"{rel}:{digest}\n".encode("utf-8"))
     return "sha256:" + hasher.hexdigest()
