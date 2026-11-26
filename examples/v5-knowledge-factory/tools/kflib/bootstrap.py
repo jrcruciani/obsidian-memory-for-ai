@@ -218,19 +218,27 @@ def _render_bootstrap(
         estimated_len = total_len
 
 
-def build_bootstrap(
+def build_bootstrap_with_meta(
     root: Path,
     *,
     profile: str | None = None,
     budget_override: int | None = None,
-) -> str:
+    max_tokens: int | None = None,
+    chars_per_token: float | None = None,
+) -> tuple[str, dict[str, Any]]:
     cfg = dict(DEFAULT_BOOTSTRAP, **load_yaml_file(root / "factory/schema/bootstrap.yaml"))
     profiles = cfg.get("profiles", DEFAULT_BOOTSTRAP["profiles"])
     prof_name = profile or str(cfg.get("default_profile", "default"))
     if prof_name not in profiles:
         raise ValueError(f"unknown bootstrap profile {prof_name!r}; available: {sorted(profiles.keys())}")
     prof = profiles[prof_name]
+    cpt = float(chars_per_token if chars_per_token is not None else cfg.get("chars_per_token", 4.0))
+    if cpt <= 0:
+        raise ValueError("chars_per_token must be > 0")
     budget = budget_override if budget_override is not None else int(prof.get("budget_chars", 6000))
+    if max_tokens is not None:
+        token_char_cap = max(1, int(max_tokens * cpt))
+        budget = min(budget, token_char_cap)
     lookback = int(cfg.get("lookback_days", 45))
     ref = today()
     digest = canonical_source_digest(root, ref)
@@ -258,7 +266,39 @@ def build_bootstrap(
         for _, _, line in rows:
             trial = _render_bootstrap([*selected, (sec_name, line)], profile=prof_name, budget=budget, ref_date=ref, source_digest=digest)
             if len(trial) > budget:
-                return current_text
+                est_tokens = max(1, int(round(len(current_text) / cpt)))
+                return current_text, {
+                    "profile": prof_name,
+                    "chars": len(current_text),
+                    "budget_chars": budget,
+                    "chars_per_token": cpt,
+                    "estimated_tokens": est_tokens,
+                }
             selected.append((sec_name, line))
             current_text = trial
-    return current_text
+    est_tokens = max(1, int(round(len(current_text) / cpt)))
+    return current_text, {
+        "profile": prof_name,
+        "chars": len(current_text),
+        "budget_chars": budget,
+        "chars_per_token": cpt,
+        "estimated_tokens": est_tokens,
+    }
+
+
+def build_bootstrap(
+    root: Path,
+    *,
+    profile: str | None = None,
+    budget_override: int | None = None,
+    max_tokens: int | None = None,
+    chars_per_token: float | None = None,
+) -> str:
+    text, _ = build_bootstrap_with_meta(
+        root,
+        profile=profile,
+        budget_override=budget_override,
+        max_tokens=max_tokens,
+        chars_per_token=chars_per_token,
+    )
+    return text

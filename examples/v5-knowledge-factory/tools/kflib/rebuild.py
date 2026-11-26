@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import datetime as dt
 import hashlib
 import re
 from collections import defaultdict
@@ -9,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from .bootstrap import build_bootstrap, render_scalar_inline
+from .locking import vault_write_lock
 from .model import (
     WIKILINK_RE,
     atomic_write_text,
@@ -17,6 +19,7 @@ from .model import (
     is_active_head,
     is_fact_visible,
     load_entities,
+    load_manifest,
     load_yaml_file,
     parse_datetime,
     rel_path,
@@ -142,6 +145,48 @@ def build_all_views(root: Path) -> dict[str, str]:
     tl_body = "\n".join(line for _, line in tl_entries) or "_Timeline is empty._"
     files["_generated/views/timeline.md"] = _wrap_generated("Chronological Timeline", tl_body, digest)
 
+    # Personal Memory Obsidian Dashboard (generated only in personal_mode to keep standard vaults byte-identical)
+    manifest = load_manifest(root)
+    if (manifest.get("settings") or {}).get("personal_mode"):
+        open_sigs = [(r, fm) for r, fm in signals if fm.get("status") == "open"]
+        pending_props = [(r, fm) for r, fm in proposals if fm.get("status") in {"proposed", "approved", "changes_requested"}]
+        pinned_facts = [(r, fm) for r, fm in active_facts if fm.get("pinned")]
+        dash_lines = [
+            "## Quick Navigation",
+            "- [[_generated/views/bootstrap-personal|Personal Bootstrap Context]]",
+            "- [[_generated/views/factory-queue|Factory Review Queue]]",
+            "- [[_generated/views/catalog|Full Knowledge Catalog]]",
+            "- [[_generated/views/timeline|Chronological Timeline]]",
+            "- [[_generated/views/stale|Stale Knowledge Report]]",
+            "",
+            "## Vault Summary",
+            f"- **Entities:** {len(entities)} | **Active Facts:** {len(active_facts)} ({len(pinned_facts)} pinned)",
+            f"- **Skills:** {len(active_skills)} | **Guidance:** {len(active_guidance)} | **Decisions:** {len(decisions)}",
+            f"- **Open Signals:** {len(open_sigs)} | **Pending Proposals:** {len(pending_props)}",
+            "",
+            "## Pinned Personal Facts",
+            *(
+                [f"- [[{r.removesuffix('.md')}|{fm['entity']}/{fm['predicate']}]] = {render_scalar_inline(fm['value'])}" for r, fm in pinned_facts[:15]]
+                or ["_None pinned yet. Use `kf.py remember --pinned`._"]
+            ),
+            "",
+            "## Open Signals & Pending Reviews",
+            *(
+                [f"- `[signal]` [[{r.removesuffix('.md')}|{fm['id']}]] ({fm['kind']}/{fm['severity']}): {fm['summary']}" for r, fm in open_sigs[:10]]
+                + [f"- `[proposal]` [[{r.removesuffix('.md')}|{fm['id']}]] ({fm['status']}): {fm['title']}" for r, fm in pending_props[:10]]
+                or ["_Inbox zero — nothing pending._"]
+            ),
+            "",
+            "## Quick Personal Commands",
+            "```bash",
+            "python3 tools/kf.py remember --entity me --predicate preference --value \"...\" --pinned",
+            "python3 tools/kf.py query search \"...\" --hybrid",
+            "python3 tools/kf.py curate sleep-pack --emit-signals",
+            "python3 tools/kf_mcp.py --vault .",
+            "```",
+        ]
+        files["_generated/views/dashboard.md"] = _wrap_generated("Personal Memory Dashboard", "\n".join(dash_lines), digest)
+
     # By-entity dossiers
     for eid, ent in sorted(entities.items()):
         ent_facts = [(r, fm) for r, fm in active_facts if fm.get("entity") == eid]
@@ -223,7 +268,7 @@ def build_lexical_entries(root: Path) -> list[dict[str, str]]:
     return entries
 
 
-def compute_graph_edges(root: Path) -> list[tuple[str, str, str, str]]:
+def compute_graph_edges(root: Path, *, as_of: dt.date | None = None) -> list[tuple[str, str, str, str]]:
     """Return sorted tuples (source_node, relation, target_node, evidence_path)."""
     entities = load_entities(root)
     alias_to_id: dict[str, str] = {}
@@ -232,7 +277,7 @@ def compute_graph_edges(root: Path) -> list[tuple[str, str, str, str]]:
             if isinstance(name, str) and name.strip():
                 alias_to_id[fold_text(name)] = eid
 
-    ref = today()
+    ref = as_of or today()
     edges: set[tuple[str, str, str, str]] = set()
     for p, fm, body in scan_records(root, "knowledge/facts", "fact"):
         if not is_fact_visible(fm, ref):
@@ -299,31 +344,32 @@ def build_all_indexes(root: Path) -> dict[str, str]:
 
 
 def rebuild_all(root: Path, *, views_only: bool = False, indexes_only: bool = False) -> list[str]:
-    expected: dict[str, str] = {}
-    if not indexes_only:
-        expected.update(build_all_views(root))
-    if not views_only:
-        expected.update(build_all_indexes(root))
+    with vault_write_lock(root):
+        expected: dict[str, str] = {}
+        if not indexes_only:
+            expected.update(build_all_views(root))
+        if not views_only:
+            expected.update(build_all_indexes(root))
 
-    # Remove stale files inside rebuilt directories so deleted entities don't linger
-    if not indexes_only:
-        views_dir = root / "_generated/views"
-        if views_dir.exists():
-            for existing in sorted(views_dir.rglob("*.md")):
-                if rel_path(existing, root) not in expected:
-                    existing.unlink()
-    if not views_only:
-        idx_dir = root / "_generated/indexes"
-        if idx_dir.exists():
-            for existing in sorted(idx_dir.rglob("*.md")):
-                if rel_path(existing, root) not in expected:
-                    existing.unlink()
+        # Remove stale files inside rebuilt directories so deleted entities don't linger
+        if not indexes_only:
+            views_dir = root / "_generated/views"
+            if views_dir.exists():
+                for existing in sorted(views_dir.rglob("*.md")):
+                    if rel_path(existing, root) not in expected:
+                        existing.unlink()
+        if not views_only:
+            idx_dir = root / "_generated/indexes"
+            if idx_dir.exists():
+                for existing in sorted(idx_dir.rglob("*.md")):
+                    if rel_path(existing, root) not in expected:
+                        existing.unlink()
 
-    written: list[str] = []
-    for rel, content in sorted(expected.items()):
-        atomic_write_text(root / rel, content)
-        written.append(rel)
-    return written
+        written: list[str] = []
+        for rel, content in sorted(expected.items()):
+            atomic_write_text(root / rel, content)
+            written.append(rel)
+        return written
 
 
 def verify_generated_integrity(root: Path) -> list[tuple[str, str]]:

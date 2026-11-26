@@ -17,6 +17,7 @@ This repository defines **Obsidian Memory for AI v5.0: The Knowledge Factory Reb
 | Path | Status | Purpose |
 |---|---|---|
 | [`../SPEC-v5.0.md`](../SPEC-v5.0.md) | **Normative (v5.0)** | Complete v5.0 protocol contract, schemas, CLI, invariants, and gates |
+| [`personal-mode.md`](personal-mode.md) | **Current (v5.1)** | Personal fast-track mode, BM25/FTS5+RRF hybrid search, OKF v0.2, sleep-pack & MCP server |
 | [`architecture.md`](architecture.md) | Current | Manifesto, four-plane layout, challenged v4.1 decisions, retired legacy concepts |
 | [`executor-and-curator.md`](executor-and-curator.md) | Current | Operating model for Executors, Curators, and Reviewers/Owners |
 | [`migration-from-v4.1.md`](migration-from-v4.1.md) | Current | Breaking changes, crosswalk tables, and automated `kf.py migrate` guide |

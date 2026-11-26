@@ -14,9 +14,10 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from kflib import SPEC_VERSION  # noqa: E402
-from kflib.bootstrap import build_bootstrap  # noqa: E402
+from kflib.bootstrap import build_bootstrap, build_bootstrap_with_meta  # noqa: E402
 from kflib.capture import capture_event, capture_signal  # noqa: E402
-from kflib.curate import dismiss_signal, scan_vault_drift  # noqa: E402
+from kflib.compact import archive_ledger  # noqa: E402
+from kflib.curate import build_sleep_curation_pack, dismiss_signal, scan_vault_drift  # noqa: E402
 from kflib.governance import (  # noqa: E402
     create_proposal,
     list_proposals,
@@ -25,8 +26,11 @@ from kflib.governance import (  # noqa: E402
     show_proposal,
     submit_review,
 )
+from kflib.hybrid_index import build_hybrid_index, hybrid_search  # noqa: E402
 from kflib.migrate import migrate_v4_to_v5  # noqa: E402
-from kflib.model import NAMESPACES, SIGNAL_KINDS  # noqa: E402
+from kflib.model import ENTITY_KINDS, NAMESPACES, SIGNAL_KINDS  # noqa: E402
+from kflib.okf import export_okf_bundle, import_okf_bundle  # noqa: E402
+from kflib.personal import NOTE_KINDS, forget_fact, remember_fact, write_note  # noqa: E402
 from kflib.query import (  # noqa: E402
     query_by_id,
     query_decisions,
@@ -89,17 +93,78 @@ def build_parser() -> argparse.ArgumentParser:
     p_init = sub.add_parser("init", help="Initialize a new v5.0 Knowledge Factory vault")
     p_init.add_argument("target", type=Path, help="Target vault directory")
     p_init.add_argument("--force", action="store_true", help="Initialize even if directory is non-empty")
+    p_init.add_argument("--profile", default="standard", choices=["standard", "personal"], help="Vault profile (standard or personal)")
 
     # lint
     p_lint = sub.add_parser("lint", help="Validate schemas, invariants, lineage, and generated artifacts")
     p_lint.add_argument("--strict", action="store_true", help="Treat warnings as errors and verify _generated/ integrity")
+    p_lint.add_argument("--forgiving", action="store_true", help="OKF forgiving mode: downgrade unknown extra frontmatter fields to WARN")
     p_lint.add_argument("--stale", action="store_true", help="Include staleness checks")
     p_lint.add_argument("--check-generated", action="store_true", help="Verify _generated/ views and indexes are fresh and unedited")
 
     # bootstrap
     p_boot = sub.add_parser("bootstrap", help="Render deterministic character-budgeted context")
-    p_boot.add_argument("--profile", default=None, help="Bootstrap profile (default, executor, curator)")
+    p_boot.add_argument("--profile", default=None, help="Bootstrap profile (personal, default, executor, curator)")
     p_boot.add_argument("--budget", type=int, default=None, help="Override character budget")
+    p_boot.add_argument("--max-tokens", type=int, default=None, help="Cap context by approximate token count")
+    p_boot.add_argument("--chars-per-token", type=float, default=None, help="Override chars-per-token ratio (default 3.5 personal / 4.0 standard)")
+
+    # personal fast-track commands: remember, forget, note
+    p_rem = sub.add_parser("remember", help="Personal fast-track: create, confirm, or supersede a fact in one atomic command")
+    p_rem.add_argument("--entity", required=True)
+    p_rem.add_argument("--predicate", required=True)
+    p_rem.add_argument("--value", required=True)
+    p_rem.add_argument("--valid-from", default=None)
+    p_rem.add_argument("--valid-until", default=None)
+    p_rem.add_argument("--pinned", action="store_true")
+    p_rem.add_argument("--trust", default="owner", choices=["owner", "agent", "external"])
+    p_rem.add_argument("--assertion", default="stated", choices=["stated", "observed", "inferred"])
+    p_rem.add_argument("--confidence", type=float, default=1.0)
+    p_rem.add_argument("--derived-from", nargs="+")
+    p_rem.add_argument("--entity-kind", default="concept", choices=list(ENTITY_KINDS))
+    p_rem.add_argument("--entity-display", default=None)
+    p_rem.add_argument("--entity-aliases", nargs="+")
+    p_rem.add_argument("--no-auto-entity", action="store_true")
+    p_rem.add_argument("--body", default="")
+    p_rem.add_argument("--actor", default=None)
+    p_rem.add_argument("--no-rebuild", action="store_true")
+
+    p_fgt = sub.add_parser("forget", help="Personal fast-track: non-destructively retract a fact")
+    p_fgt.add_argument("--entity", required=True)
+    p_fgt.add_argument("--predicate", required=True)
+    p_fgt.add_argument("--reason", required=True)
+    p_fgt.add_argument("--actor", default=None)
+    p_fgt.add_argument("--no-rebuild", action="store_true")
+
+    p_note = sub.add_parser("note", help="Create or append a non-authoritative narrative note in knowledge/notes/")
+    p_note.add_argument("--slug", required=True)
+    p_note.add_argument("--title", required=True)
+    p_note.add_argument("--body", required=True)
+    p_note.add_argument("--kind", default="general", choices=list(NOTE_KINDS))
+    p_note.add_argument("--entities", nargs="+")
+    p_note.add_argument("--tags", nargs="+")
+    p_note.add_argument("--append", action="store_true")
+
+    # disposable hybrid search index
+    p_idx = sub.add_parser("index", help="Manage disposable SQLite FTS5 (+ optional embedding) search index")
+    idx_sub = p_idx.add_subparsers(dest="idx_cmd", required=True)
+    p_ib = idx_sub.add_parser("build", help="Rebuild _generated/indexes/search.sqlite from Markdown truth")
+    p_ib.add_argument("--embeddings", action="store_true", help="Include local Ollama embeddings if available")
+    p_ib.add_argument("--no-notes", action="store_true")
+    p_ib.add_argument("--no-sources", action="store_true")
+    p_ib.add_argument("--no-events", action="store_true")
+
+    # OKF v0.2 export/import and ledger archival
+    p_exp = sub.add_parser("export-okf", help="Export living knowledge into a Google OKF v0.2 bundle")
+    p_exp.add_argument("out_dir", type=Path)
+
+    p_imp = sub.add_parser("import-okf", help="Forgivingly import an OKF bundle into sources/okf-imports/ + curation signals")
+    p_imp.add_argument("in_dir", type=Path)
+    p_imp.add_argument("--emitted-by", default=None)
+
+    p_arch = sub.add_parser("archive-ledger", help="Archive old closed signals and receipts into yearly cold rollups (OD-004)")
+    p_arch.add_argument("--before", required=True, help="Cutoff ISO date YYYY-MM-DD")
+    p_arch.add_argument("--yes", action="store_true")
 
     # rebuild
     p_reb = sub.add_parser("rebuild", help="Deterministically regenerate _generated/ views and indexes")
@@ -170,6 +235,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_cdism.add_argument("--reason", required=True)
     p_cdism.add_argument("--yes", action="store_true")
     p_cdism.add_argument("--rebuild", action="store_true")
+
+    p_csleep = cur_sub.add_parser("sleep-pack", help="Generate a prompt-injection-hardened Sleep-Time Curation bundle")
+    p_csleep.add_argument("--emit-signals", action="store_true")
+    p_csleep.add_argument("--emitted-by", default="agent-curator-00000003")
+    p_csleep.add_argument("--max-sources", type=int, default=8)
 
     # propose
     p_prop = sub.add_parser("propose", help="Create/list/show executable curation proposals")
@@ -270,10 +340,18 @@ def build_parser() -> argparse.ArgumentParser:
 
     qsrch = q_sub.add_parser("search")
     qsrch.add_argument("term")
-    qsrch.add_argument("--types", default=None, help="Comma-separated types: fact,skill,guidance,decision")
+    qsrch.add_argument("--types", default=None, help="Comma-separated types: fact,skill,guidance,decision,note,source,event")
+    qsrch.add_argument("--include-notes", action="store_true")
+    qsrch.add_argument("--include-sources", action="store_true")
+    qsrch.add_argument("--limit", type=int, default=None)
+    qsrch.add_argument("--hybrid", action="store_true", help="Use disposable SQLite FTS5 (+ optional embedding) RRF index")
+    qsrch.add_argument("--embeddings", action="store_true", help="Enable local Ollama embeddings with --hybrid")
 
     qgr = q_sub.add_parser("graph")
     qgr.add_argument("node")
+    qgr.add_argument("--depth", type=int, default=1)
+    qgr.add_argument("--to", dest="target_node", default=None, help="Find shortest path to target entity")
+    qgr.add_argument("--as-of", default=None, help="Filter fact edges valid as of YYYY-MM-DD")
 
     # migrate
     p_mig = sub.add_parser("migrate", help="Migrate a v4.0/v4.1 vault into Knowledge Factory v5.0")
@@ -287,8 +365,14 @@ def build_parser() -> argparse.ArgumentParser:
 def dispatch(args: argparse.Namespace, root: Path, out: io.StringIO) -> tuple[int, dict[str, Any], list[str]]:
     cmd = args.command
     if cmd == "init":
-        info = init_vault(args.target.resolve(), force=args.force, copy_tools_from=Path(__file__).resolve().parent)
-        print(f"Initialized Knowledge Factory v5.0 vault at {args.target.resolve()}", file=out)
+        info = init_vault(
+            args.target.resolve(),
+            force=args.force,
+            copy_tools_from=Path(__file__).resolve().parent,
+            profile=args.profile,
+        )
+        suffix = "" if args.profile == "standard" else f" [profile={args.profile}]"
+        print(f"Initialized Knowledge Factory v5.0 vault at {args.target.resolve()}{suffix}", file=out)
         return 0, info, []
 
     if cmd == "lint":
@@ -297,6 +381,7 @@ def dispatch(args: argparse.Namespace, root: Path, out: io.StringIO) -> tuple[in
             strict=args.strict,
             check_stale=args.stale,
             check_generated=args.check_generated,
+            forgiving=args.forgiving,
         )
         errors = [f for f in findings if f.severity == "ERROR"]
         warns = [f for f in findings if f.severity == "WARN"]
@@ -313,9 +398,101 @@ def dispatch(args: argparse.Namespace, root: Path, out: io.StringIO) -> tuple[in
         return (1 if failed else 0), data, [f"{f.severity}: {f.path}: {f.message}" for f in findings]
 
     if cmd == "bootstrap":
-        text = build_bootstrap(root, profile=args.profile, budget_override=args.budget)
+        text, meta = build_bootstrap_with_meta(
+            root,
+            profile=args.profile,
+            budget_override=args.budget,
+            max_tokens=args.max_tokens,
+            chars_per_token=args.chars_per_token,
+        )
         out.write(text)
-        return 0, {"profile": args.profile or "default", "chars": len(text), "content": text}, []
+        return 0, dict(meta, content=text), []
+
+    if cmd == "remember":
+        res = remember_fact(
+            root,
+            entity=args.entity,
+            predicate=args.predicate,
+            value=args.value,
+            valid_from=args.valid_from,
+            valid_until=args.valid_until,
+            pinned=args.pinned,
+            trust=args.trust,
+            assertion=args.assertion,
+            confidence=args.confidence,
+            derived_from=args.derived_from,
+            auto_entity=not args.no_auto_entity,
+            entity_kind=args.entity_kind,
+            entity_display=args.entity_display,
+            entity_aliases=args.entity_aliases,
+            body=args.body,
+            actor_id=args.actor,
+            rebuild=not args.no_rebuild,
+        )
+        print(f"{res['action'].capitalize()} fact {res['entity']}/{res['predicate']} = {res['value']} (receipt={res['receipt_id']})", file=out)
+        return 0, res, []
+
+    if cmd == "forget":
+        res = forget_fact(
+            root,
+            entity=args.entity,
+            predicate=args.predicate,
+            reason=args.reason,
+            actor_id=args.actor,
+            rebuild=not args.no_rebuild,
+        )
+        print(f"Retracted fact {res['entity']}/{res['predicate']} (receipt={res['receipt_id']})", file=out)
+        return 0, res, []
+
+    if cmd == "note":
+        res = write_note(
+            root,
+            slug=args.slug,
+            title=args.title,
+            body=args.body,
+            kind=args.kind,
+            entities=args.entities,
+            tags=args.tags,
+            append=args.append,
+        )
+        print(f"Saved note {res['id']} ({res['path']})", file=out)
+        return 0, res, []
+
+    if cmd == "index":
+        if args.idx_cmd == "build":
+            stats = build_hybrid_index(
+                root,
+                use_embeddings=args.embeddings,
+                include_notes=not args.no_notes,
+                include_sources=not args.no_sources,
+                include_events=not args.no_events,
+            )
+            print(
+                f"Indexed {stats['documents']} document(s) into {stats['path']} (embedded={stats['embedded']}).",
+                file=out,
+            )
+            return 0, stats, list(stats.get("warnings") or [])
+
+    if cmd == "export-okf":
+        res = export_okf_bundle(root, args.out_dir.resolve())
+        print(f"Exported {res['exported_files']} OKF v0.2 concept(s) to {res['out_dir']}", file=out)
+        return 0, res, []
+
+    if cmd == "import-okf":
+        res = import_okf_bundle(root, args.in_dir.resolve(), emitted_by=args.emitted_by)
+        print(
+            f"Imported {res['imported_sources']} OKF source(s) and emitted {res['emitted_signals']} curation signal(s).",
+            file=out,
+        )
+        return 0, res, []
+
+    if cmd == "archive-ledger":
+        res = archive_ledger(root, before=args.before, yes=args.yes)
+        print(
+            f"Archived {res['archived_signals']} signal(s) and {res['archived_receipts']} receipt(s) before {res['before']}.",
+            file=out,
+        )
+        return 0, res, []
 
     if cmd == "rebuild":
         written = rebuild_all(root, views_only=args.views_only, indexes_only=args.indexes_only)
@@ -407,6 +584,15 @@ def dispatch(args: argparse.Namespace, root: Path, out: io.StringIO) -> tuple[in
                 rebuild=args.rebuild,
             )
             print(f"Dismissed signal {args.signal_id} -> receipt {res.get('receipt_id')}", file=out)
+            return 0, res, []
+        if args.cur_cmd == "sleep-pack":
+            res = build_sleep_curation_pack(
+                root,
+                emit_signals=args.emit_signals,
+                emitted_by=args.emitted_by,
+                max_sources=args.max_sources,
+            )
+            out.write(res["prompt_markdown"])
             return 0, res, []
 
     if cmd == "propose":
@@ -527,11 +713,33 @@ def dispatch(args: argparse.Namespace, root: Path, out: io.StringIO) -> tuple[in
             return 0, payload, []
         if q == "search":
             tset = {s.strip() for s in args.types.split(",") if s.strip()} if args.types else None
-            txt, rows, diags = query_search(root, args.term, types=tset)
+            if args.hybrid:
+                txt, rows, diags = hybrid_search(
+                    root,
+                    args.term,
+                    types=tset,
+                    use_embeddings=args.embeddings,
+                    limit=args.limit or 10,
+                )
+            else:
+                txt, rows, diags = query_search(
+                    root,
+                    args.term,
+                    types=tset,
+                    include_notes=args.include_notes,
+                    include_sources=args.include_sources,
+                    limit=args.limit,
+                )
             out.write(txt)
             return 0, {"results": rows}, diags
         if q == "graph":
-            txt, rows, diags = query_graph(root, args.node)
+            txt, rows, diags = query_graph(
+                root,
+                args.node,
+                depth=args.depth,
+                target_node=args.target_node,
+                as_of=args.as_of,
+            )
             out.write(txt)
             return 0, {"relationships": rows}, diags
 
